@@ -428,6 +428,12 @@ h2 {
 }
 
 /* Pitch Controls */
+.pitch-header {
+    margin-bottom: 15px;
+    display: flex;
+    justify-content: flex-end;
+}
+
 .pitch-controls {
     display: flex;
     flex-direction: column;
@@ -714,12 +720,35 @@ footer {
         width: 100%;
     }
 
+    .pattern-section {
+        overflow-x: auto;
+        overflow-y: hidden;
+    }
+
+    .pattern-grid {
+        min-width: fit-content;
+    }
+
     /* Pattern grid - make squares bigger for touch */
     .pattern-step {
         width: 40px;
         height: 40px;
         min-width: 40px;
         min-height: 40px;
+    }
+
+    .pattern-section {
+        overflow-x: auto;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .pattern-grid {
+        min-width: fit-content;
+    }
+
+    .pattern-row {
+        min-width: fit-content;
     }
 
     .pattern-label {
@@ -729,7 +758,7 @@ footer {
 
     .pattern-steps {
         gap: 3px;
-        overflow-x: auto;
+        flex-shrink: 0;
     }
 
     /* Pitch controls */

@@ -171,6 +171,9 @@ class TaikoMetronome {
                 this.adjustPitch(instrument, direction);
             });
         });
+        
+        // Reset all pitch button
+        document.getElementById('reset-all-pitch-btn').addEventListener('click', () => this.resetAllPitch());
     }
 
     savePattern() {
@@ -448,6 +451,14 @@ class TaikoMetronome {
         }
     }
 
+    resetAllPitch() {
+        Object.keys(this.pitchOffsets).forEach(instrument => {
+            this.pitchOffsets[instrument] = 0;
+            document.getElementById(`pitch-${instrument}`).textContent = '0';
+        });
+        this.showNotification('All pitch adjustments reset to 0');
+    }
+
     updateBeatIndicator() {
         const indicator = document.getElementById('beat-indicator');
         const beatNum = (this.currentBeat % this.beatsPerBar) + 1;
@@ -521,16 +532,17 @@ class TaikoMetronome {
             for (let i = 0; i < this.stepsPerBar; i++) {
                 const step = document.createElement('button');
                 step.className = 'pattern-step';
-                // Highlight every beat (every 4 steps in 4/4, every 3 steps in 3/4, every 2 steps in 6/8)
-                let stepsPerBeat;
+                // Highlight beats based on time signature
                 if (this.timeSignature === '4/4') {
-                    stepsPerBeat = 4;
+                    // Every 4 steps (beat 1, 5, 9, 13)
+                    if (i % 4 === 0) step.classList.add('beat-1');
                 } else if (this.timeSignature === '3/4') {
-                    stepsPerBeat = 3;
+                    // Every 3 steps (beat 1, 4, 7, 10)
+                    if (i % 3 === 0) step.classList.add('beat-1');
                 } else if (this.timeSignature === '6/8') {
-                    stepsPerBeat = 2; // 6/8 has 6 beats, so every 2 steps
+                    // Only 1st and 7th steps (two groups of 6 eighth notes)
+                    if (i === 0 || i === 6) step.classList.add('beat-1');
                 }
-                if (i % stepsPerBeat === 0) step.classList.add('beat-1');
                 step.dataset.instrument = instrument;
                 step.dataset.step = i;
                 

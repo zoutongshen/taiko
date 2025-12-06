@@ -26,6 +26,18 @@
                 </div>
             </section>
 
+            <!-- Playback Controls -->
+            <section class="playback-section">
+                <div class="playback-controls">
+                    <button id="play-btn" class="control-btn play-btn">▶ Play</button>
+                    <button id="stop-btn" class="control-btn stop-btn">Stop</button>
+                </div>
+                <div class="status-display">
+                    <span id="status-text">Ready</span>
+                    <span id="beat-indicator"></span>
+                </div>
+            </section>
+
             <!-- Rhythm Type Section -->
             <section class="rhythm-section">
                 <h2>Rhythm Type</h2>
@@ -66,6 +78,9 @@
             <!-- Pitch Control Section -->
             <section class="pitch-section">
                 <h2>Pitch Adjustment</h2>
+                <div class="pitch-header">
+                    <button id="reset-all-pitch-btn" class="preset-btn">Reset All Pitch</button>
+                </div>
                 <div class="pitch-controls">
                     <div class="pitch-row">
                         <span class="instrument-label">Nagado:</span>
@@ -136,18 +151,6 @@
                         <label for="loop-count">Bars to play:</label>
                         <input type="number" id="loop-count" min="1" max="32" value="4" step="1">
                     </div>
-                </div>
-            </section>
-
-            <!-- Playback Controls -->
-            <section class="playback-section">
-                <div class="playback-controls">
-                    <button id="play-btn" class="control-btn play-btn">▶ Play</button>
-                    <button id="stop-btn" class="control-btn stop-btn" disabled>⏹ Stop</button>
-                </div>
-                <div class="status-display">
-                    <span id="status-text">Ready</span>
-                    <span id="beat-indicator"></span>
                 </div>
             </section>
         </main>
