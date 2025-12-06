@@ -650,25 +650,148 @@ footer {
 }
 
 /* Responsive Design */
+/* Mobile Responsive Styles */
 @media (max-width: 768px) {
+    body {
+        padding: 10px;
+    }
+
+    .container {
+        border-radius: 10px;
+        box-shadow: 0 10px 30px rgba(204, 0, 0, 0.2);
+    }
+
+    header {
+        padding: 20px;
+    }
+
     header h1 {
         font-size: 1.8em;
+    }
+
+    main {
+        padding: 15px;
+    }
+
+    section {
+        padding: 15px;
+        margin-bottom: 20px;
+    }
+
+    h2 {
+        font-size: 1.2em;
     }
 
     .tempo-controls {
         flex-direction: column;
         align-items: stretch;
+        gap: 10px;
     }
 
-    .instrument-grid {
-        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    #tempo-slider {
+        width: 100%;
     }
 
-    .preset-buttons {
-        justify-content: center;
+    #tempo-input {
+        width: 100%;
+        text-align: center;
     }
 
-    .playback-controls {
+    .rhythm-controls {
+        gap: 15px;
+    }
+
+    .rhythm-type {
+        gap: 20px;
+    }
+
+    .time-signature {
         flex-direction: column;
+        align-items: stretch;
+    }
+
+    .time-sig-select {
+        width: 100%;
+    }
+
+    /* Pattern grid - make squares bigger for touch */
+    .pattern-step {
+        width: 40px;
+        height: 40px;
+        min-width: 40px;
+        min-height: 40px;
+    }
+
+    .pattern-label {
+        min-width: 70px;
+        font-size: 0.9em;
+    }
+
+    .pattern-steps {
+        gap: 3px;
+        overflow-x: auto;
+    }
+
+    /* Pitch controls */
+    .pitch-row {
+        gap: 10px;
+    }
+
+    .instrument-label {
+        min-width: 70px;
+        font-size: 0.9em;
+    }
+
+    .pitch-btn {
+        width: 45px;
+        height: 45px;
+    }
+
+    /* Save/Load section */
+    .preset-controls {
+        gap: 15px;
+    }
+
+    .save-pattern, .load-pattern {
+        flex-direction: column;
+    }
+
+    #pattern-name, .pattern-select {
+        width: 100%;
+    }
+
+    .preset-btn {
+        width: 100%;
+        padding: 12px;
+    }
+
+    /* Loop controls */
+    .loop-controls label {
+        font-size: 0.9em;
+    }
+
+    #loop-count {
+        width: 80px;
+    }
+
+    /* Playback controls - make buttons bigger for touch */
+    .playback-controls {
+        flex-direction: row;
+        gap: 10px;
+    }
+
+    .control-btn {
+        padding: 15px 25px;
+        font-size: 1em;
+        flex: 1;
+    }
+
+    /* Pattern control buttons */
+    .pattern-controls {
+        gap: 10px;
+    }
+
+    .pattern-control-btn {
+        padding: 12px;
     }
 }
