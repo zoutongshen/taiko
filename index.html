@@ -7,12 +7,12 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#cc0000">
     <title>Taiko Metronome</title>
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=2">
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>🥁 Taiko Metronome</h1>
+            <h1>Taiko Metronome</h1>
         </header>
 
         <main>
@@ -22,19 +22,7 @@
                 <div class="tempo-controls">
                     <label for="tempo-slider">BPM:</label>
                     <input type="range" id="tempo-slider" min="40" max="240" value="120" step="1">
-                    <input type="number" id="tempo-input" min="40" max="240" value="120" step="1">
-                </div>
-            </section>
-
-            <!-- Playback Controls -->
-            <section class="playback-section">
-                <div class="playback-controls">
-                    <button id="play-btn" class="control-btn play-btn">▶ Play</button>
-                    <button id="stop-btn" class="control-btn stop-btn">Stop</button>
-                </div>
-                <div class="status-display">
-                    <span id="status-text">Ready</span>
-                    <span id="beat-indicator"></span>
+                    <input type="number" id="tempo-input" min="40" max="240" value="120" step="1" inputmode="numeric" pattern="[0-9]*">
                 </div>
             </section>
 
@@ -60,6 +48,16 @@
                             <option value="6/8">6/8 (12 steps)</option>
                         </select>
                     </div>
+                    <div class="loop-controls">
+                        <label>
+                            <input type="checkbox" id="loop-checkbox" checked>
+                            Loop continuously
+                        </label>
+                        <div class="loop-count-container" style="display: none;">
+                            <label for="loop-count">Bars:</label>
+                            <input type="number" id="loop-count" min="1" max="32" value="4" step="1">
+                        </div>
+                    </div>
                 </div>
             </section>
 
@@ -72,6 +70,18 @@
                 <div class="pattern-controls">
                     <button id="clear-pattern-btn" class="pattern-control-btn">Clear All</button>
                     <button id="fill-pattern-btn" class="pattern-control-btn">Fill All</button>
+                </div>
+            </section>
+
+            <!-- Playback Controls -->
+            <section class="playback-section">
+                <div class="playback-controls">
+                    <button id="play-btn" class="control-btn play-btn">▶ Play</button>
+                    <button id="stop-btn" class="control-btn stop-btn">Stop</button>
+                </div>
+                <div class="status-display">
+                    <span id="status-text">Ready</span>
+                    <span id="beat-indicator"></span>
                 </div>
             </section>
 
@@ -139,20 +149,6 @@
                 </div>
             </section>
 
-            <!-- Loop Control Section -->
-            <section class="loop-section">
-                <h2>Loop Control</h2>
-                <div class="loop-controls">
-                    <label>
-                        <input type="checkbox" id="loop-checkbox" checked>
-                        Loop continuously
-                    </label>
-                    <div class="loop-count-container" style="display: none;">
-                        <label for="loop-count">Bars to play:</label>
-                        <input type="number" id="loop-count" min="1" max="32" value="4" step="1">
-                    </div>
-                </div>
-            </section>
         </main>
 
         <footer>

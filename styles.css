@@ -17,7 +17,7 @@ body {
     margin: 0 auto;
     background: #fff;
     border-radius: 20px;
-    box-shadow: 0 20px 60px rgba(204, 0, 0, 0.3);
+    box-shadow: 0 20px 60px rgba(45, 122, 158, 0.2);
     overflow: hidden;
     border: 3px solid #cc0000;
 }
@@ -49,7 +49,7 @@ section {
 h2 {
     color: #cc0000;
     margin-bottom: 15px;
-    font-size: 1.5em;
+    font-size: 1.4em;
 }
 
 /* Tempo Controls */
@@ -304,9 +304,9 @@ h2 {
 }
 
 .pattern-step.active {
-    background: #cc0000;
-    border-color: #cc0000;
-    box-shadow: 0 2px 8px rgba(204, 0, 0, 0.6);
+    background: #ff9999;
+    border-color: #ff9999;
+    box-shadow: 0 2px 8px rgba(255, 153, 153, 0.4);
 }
 
 .pattern-step.playing {
@@ -338,7 +338,7 @@ h2 {
     border-radius: 8px;
     cursor: pointer;
     font-weight: 600;
-    transition: all 0.3s ease;
+    transition: all 0.2s ease;
 }
 
 .pattern-control-btn:hover {
