@@ -86,6 +86,8 @@ class TaikoMetronome {
         rhythmRadios.forEach(radio => {
             radio.addEventListener('change', (e) => {
                 this.rhythmType = e.target.value;
+                console.log('Rhythm type changed to:', this.rhythmType);
+                this.showNotification(`Rhythm: ${this.rhythmType}`);
             });
         });
 
@@ -246,14 +248,14 @@ class TaikoMetronome {
             return;
         }
 
+        // Calculate CURRENT beat timing BEFORE playing
+        const beatDuration = this.calculateBeatDuration();
+
         // Play selected instruments
         this.playInstruments();
 
         // Update beat indicator
         this.updateBeatIndicator();
-
-        // Calculate next beat timing
-        const beatDuration = this.calculateBeatDuration();
         
         // Move to next beat
         this.currentBeat++;
@@ -277,12 +279,19 @@ class TaikoMetronome {
         // So we need to divide the beat duration by 4
         const baseDuration = (60000 / this.tempo) / 4; // milliseconds per 16th note step
         
-        if (this.rhythmType === 'swing' && this.currentStep % 2 === 0) {
-            return baseDuration * 1.5; // Swing feel
-        } else if (this.rhythmType === 'swing' && this.currentStep % 2 === 1) {
-            return baseDuration * 0.5; // Swing feel
+        console.log(`Beat calc - rhythmType: ${this.rhythmType}, currentStep: ${this.currentStep}`);
+        
+        if (this.rhythmType === 'swing') {
+            // Apply swing to pairs of 16th notes (every 2 steps)
+            // Use a 3:2 ratio for more musical swing (60/40 split)
+            // Steps 0,2,4,6,8,10,12,14 are longer (downbeat of pair)
+            // Steps 1,3,5,7,9,11,13,15 are shorter (upbeat of pair)
+            const duration = (this.currentStep % 2 === 0) ? baseDuration * 1.2 : baseDuration * 0.8;
+            console.log(`SWING APPLIED: step ${this.currentStep}, duration ${duration.toFixed(1)}ms (base: ${baseDuration.toFixed(1)}ms)`);
+            return duration;
         }
         
+        console.log(`Regular timing: ${baseDuration.toFixed(1)}ms`);
         return baseDuration;
     }
 
@@ -347,13 +356,7 @@ class TaikoMetronome {
         const beatNum = (this.currentBeat % this.beatsPerBar) + 1;
         const barNum = this.currentBar + 1;
         
-        indicator.textContent = `Bar ${barNum} | Beat ${beatNum}`;
-        
-        // Visual pulse effect
-        indicator.style.transform = 'scale(1.2)';
-        setTimeout(() => {
-            indicator.style.transform = 'scale(1)';
-        }, 100);
+        indicator.textContent = `Bar ${barNum} | Beat ${beatNum} | Step ${this.currentStep + 1}`;
     }
 
     updateUI() {
