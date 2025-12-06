@@ -33,13 +33,25 @@ class TaikoMetronome {
             nagado: Array(16).fill(false),
             odaiko: Array(16).fill(false),
             shime: Array(16).fill(false),
-            kiai: Array(16).fill(false),
+            click: Array(16).fill(false),
             chappa: Array(16).fill(false),
             kane: Array(16).fill(false)
         };
         
         this.usePatternMode = false;
         this.currentStep = 0;
+        this.timeSignature = '4/4';
+        this.stepsPerBar = 16;
+        
+        // Pitch adjustments (in semitones, range -5 to +5)
+        this.pitchOffsets = {
+            nagado: 0,
+            odaiko: 0,
+            shime: 0,
+            click: 0,
+            chappa: 0,
+            kane: 0
+        };
         
         this.savedPatterns = this.loadSavedPatterns();
         
@@ -91,10 +103,36 @@ class TaikoMetronome {
             });
         });
 
+        // Time signature selector
+        const timeSigSelect = document.getElementById('time-sig');
+        timeSigSelect.addEventListener('change', (e) => {
+            this.timeSignature = e.target.value;
+            if (this.timeSignature === '4/4') {
+                this.stepsPerBar = 16;
+            } else if (this.timeSignature === '3/4' || this.timeSignature === '6/8') {
+                this.stepsPerBar = 12;
+            }
+            this.regeneratePatternGrid();
+            this.showNotification(`Time signature: ${this.timeSignature}`);
+        });
+
         // Save/Load pattern buttons
         document.getElementById('save-pattern-btn').addEventListener('click', () => this.savePattern());
         document.getElementById('load-pattern-btn').addEventListener('click', () => this.loadPattern());
         document.getElementById('delete-pattern-btn').addEventListener('click', () => this.deletePattern());
+        
+        // Enable/disable load and delete buttons based on selection
+        const patternSelect = document.getElementById('saved-patterns');
+        const loadBtn = document.getElementById('load-pattern-btn');
+        const deleteBtn = document.getElementById('delete-pattern-btn');
+        
+        patternSelect.addEventListener('change', (e) => {
+            const hasSelection = e.target.value !== '';
+            console.log('Pattern selection changed:', e.target.value, 'hasSelection:', hasSelection);
+            loadBtn.disabled = !hasSelection;
+            deleteBtn.disabled = !hasSelection;
+            console.log('Load button disabled:', loadBtn.disabled, 'Delete button disabled:', deleteBtn.disabled);
+        });
 
         // Loop controls
         const loopCheckbox = document.getElementById('loop-checkbox');
@@ -116,15 +154,23 @@ class TaikoMetronome {
 
         // Initialize pattern grid
         this.initializePatternGrid();
+        
+        // Initialize button states
+        document.getElementById('load-pattern-btn').disabled = true;
+        document.getElementById('delete-pattern-btn').disabled = true;
 
         // Pattern control buttons
         document.getElementById('clear-pattern-btn').addEventListener('click', () => this.clearAllPatterns());
         document.getElementById('fill-pattern-btn').addEventListener('click', () => this.fillAllPatterns());
         
-        // Save/Load pattern buttons
-        document.getElementById('save-pattern-btn').addEventListener('click', () => this.savePattern());
-        document.getElementById('load-pattern-btn').addEventListener('click', () => this.loadPattern());
-        document.getElementById('delete-pattern-btn').addEventListener('click', () => this.deletePattern());
+        // Pitch adjustment buttons
+        document.querySelectorAll('.pitch-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const instrument = e.target.dataset.instrument;
+                const direction = e.target.dataset.direction;
+                this.adjustPitch(instrument, direction);
+            });
+        });
     }
 
     savePattern() {
@@ -136,12 +182,16 @@ class TaikoMetronome {
             return;
         }
         
-        this.savedPatterns[name] = JSON.parse(JSON.stringify(this.patterns));
+        this.savedPatterns[name] = {
+            patterns: JSON.parse(JSON.stringify(this.patterns)),
+            timeSignature: this.timeSignature,
+            stepsPerBar: this.stepsPerBar
+        };
         localStorage.setItem('taikoPatterns', JSON.stringify(this.savedPatterns));
         
         this.updatePatternSelect();
         nameInput.value = '';
-        this.showNotification(`Pattern "${name}" saved!`);
+        this.showNotification(`Pattern "${name}" saved (${this.timeSignature})!`);
     }
 
     loadPattern() {
@@ -154,16 +204,44 @@ class TaikoMetronome {
         }
         
         if (this.savedPatterns[name]) {
-            this.patterns = JSON.parse(JSON.stringify(this.savedPatterns[name]));
+            const savedData = this.savedPatterns[name];
+            
+            // Check if this is old format (just patterns) or new format (with metadata)
+            const isOldFormat = Array.isArray(savedData.nagado);
+            
+            if (isOldFormat) {
+                // Old format: just load patterns
+                this.patterns = JSON.parse(JSON.stringify(savedData));
+            } else {
+                // New format: restore time signature and patterns
+                const savedTimeSignature = savedData.timeSignature || '4/4';
+                const savedStepsPerBar = savedData.stepsPerBar || 16;
+                
+                // Switch time signature if different
+                if (this.timeSignature !== savedTimeSignature) {
+                    this.timeSignature = savedTimeSignature;
+                    this.stepsPerBar = savedStepsPerBar;
+                    
+                    // Update the time signature selector
+                    const timeSigSelect = document.getElementById('time-sig');
+                    timeSigSelect.value = this.timeSignature;
+                    
+                    // Regenerate grid
+                    this.regeneratePatternGrid();
+                }
+                
+                this.patterns = JSON.parse(JSON.stringify(savedData.patterns));
+            }
             
             // Update UI
             Object.keys(this.patterns).forEach(instrument => {
-                for (let i = 0; i < 16; i++) {
+                for (let i = 0; i < this.patterns[instrument].length; i++) {
                     this.updatePatternDisplay(instrument, i);
                 }
             });
             
-            this.showNotification(`Pattern "${name}" loaded!`);
+            const timeSigInfo = isOldFormat ? '' : ` (${this.timeSignature})`;
+            this.showNotification(`Pattern "${name}" loaded${timeSigInfo}!`);
         }
     }
 
@@ -261,7 +339,7 @@ class TaikoMetronome {
         this.currentBeat++;
         this.currentStep++;
         
-        if (this.currentStep >= 16) {
+        if (this.currentStep >= this.stepsPerBar) {
             this.currentStep = 0;
         }
         
@@ -313,6 +391,13 @@ class TaikoMetronome {
             const source = this.audioContext.createBufferSource();
             source.buffer = this.audioBuffers[instrument];
             
+            // Apply pitch shifting
+            const pitchOffset = this.pitchOffsets[instrument] || 0;
+            if (pitchOffset !== 0) {
+                // Calculate playback rate: 2^(semitones/12)
+                source.playbackRate.value = Math.pow(2, pitchOffset / 12);
+            }
+            
             const gainNode = this.audioContext.createGain();
             gainNode.gain.value = 0.7;
             
@@ -333,7 +418,7 @@ class TaikoMetronome {
                 nagado: { frequency: 200, duration: 0.3, type: 'sine' },
                 odaiko: { frequency: 100, duration: 0.5, type: 'sine' },
                 shime: { frequency: 400, duration: 0.15, type: 'sine' },
-                kiai: { frequency: 600, duration: 0.2, type: 'square' },
+                click: { frequency: 600, duration: 0.2, type: 'square' },
                 chappa: { frequency: 2000, duration: 0.1, type: 'square' },
                 kane: { frequency: 1500, duration: 0.25, type: 'triangle' }
             };
@@ -348,6 +433,18 @@ class TaikoMetronome {
 
             oscillator.start(this.audioContext.currentTime);
             oscillator.stop(this.audioContext.currentTime + profile.duration);
+        }
+    }
+
+    adjustPitch(instrument, direction) {
+        const change = direction === 'up' ? 1 : -1;
+        const newPitch = this.pitchOffsets[instrument] + change;
+        
+        // Limit range to -5 to +5 semitones
+        if (newPitch >= -5 && newPitch <= 5) {
+            this.pitchOffsets[instrument] = newPitch;
+            document.getElementById(`pitch-${instrument}`).textContent = newPitch > 0 ? `+${newPitch}` : newPitch;
+            this.showNotification(`${instrument}: ${newPitch > 0 ? '+' : ''}${newPitch} semitones`);
         }
     }
 
@@ -371,39 +468,7 @@ class TaikoMetronome {
         this.updatePatternSelect();
     }
 
-    handleAudioUpload(event) {
-        const file = event.target.files[0];
-        if (!file) return;
 
-        const instrument = event.target.dataset.instrument;
-        const reader = new FileReader();
-
-        reader.onload = (e) => {
-            if (!this.audioContext) {
-                this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            }
-
-            this.audioContext.decodeAudioData(e.target.result, 
-                (buffer) => {
-                    this.audioBuffers[instrument] = buffer;
-                    this.showNotification(`${instrument} sound loaded successfully!`);
-                },
-                (error) => {
-                    console.error('Error decoding audio:', error);
-                    this.showNotification(`Error loading ${instrument} sound`, true);
-                }
-            );
-        };
-
-        reader.readAsArrayBuffer(file);
-    }
-
-    resetSound(instrument) {
-        this.audioBuffers[instrument] = null;
-        const fileInput = document.querySelector(`.audio-upload[data-instrument="${instrument}"]`);
-        if (fileInput) fileInput.value = '';
-        this.showNotification(`${instrument} reset to default sound`);
-    }
 
     showNotification(message, isError = false) {
         const statusText = document.getElementById('status-text');
@@ -419,9 +484,26 @@ class TaikoMetronome {
         }, 2000);
     }
 
+    regeneratePatternGrid() {
+        // Clear and rebuild pattern grid
+        const patternGrid = document.getElementById('pattern-grid');
+        patternGrid.innerHTML = '';
+        
+        // Reset patterns to new length
+        Object.keys(this.patterns).forEach(instrument => {
+            this.patterns[instrument] = Array(this.stepsPerBar).fill(false);
+        });
+        
+        // Update title
+        const patternTitle = document.getElementById('pattern-title');
+        patternTitle.textContent = `Pattern Sequencer (${this.stepsPerBar} steps) - Click squares to create rhythm`;
+        
+        this.initializePatternGrid();
+    }
+
     initializePatternGrid() {
         const patternGrid = document.getElementById('pattern-grid');
-        const instruments = ['nagado', 'odaiko', 'shime', 'kiai', 'chappa', 'kane'];
+        const instruments = ['nagado', 'odaiko', 'shime', 'click', 'chappa', 'kane'];
 
         instruments.forEach(instrument => {
             const row = document.createElement('div');
@@ -429,47 +511,26 @@ class TaikoMetronome {
             
             const label = document.createElement('div');
             label.className = 'pattern-label';
-            
-            const labelText = document.createElement('span');
-            labelText.className = 'pattern-label-text';
-            labelText.textContent = instrument.charAt(0).toUpperCase() + instrument.slice(1);
-            label.appendChild(labelText);
-            
-            const audioControls = document.createElement('div');
-            audioControls.className = 'pattern-audio-controls';
-            
-            const uploadLabel = document.createElement('label');
-            uploadLabel.className = 'pattern-upload-btn';
-            uploadLabel.textContent = '📁';
-            uploadLabel.title = 'Load custom sound';
-            
-            const fileInput = document.createElement('input');
-            fileInput.type = 'file';
-            fileInput.className = 'audio-upload';
-            fileInput.dataset.instrument = instrument;
-            fileInput.accept = 'audio/*';
-            fileInput.addEventListener('change', (e) => this.handleAudioUpload(e));
-            uploadLabel.appendChild(fileInput);
-            
-            const resetBtn = document.createElement('button');
-            resetBtn.className = 'pattern-reset-btn';
-            resetBtn.textContent = '↺';
-            resetBtn.title = 'Reset to default sound';
-            resetBtn.addEventListener('click', () => this.resetSound(instrument));
-            
-            audioControls.appendChild(uploadLabel);
-            audioControls.appendChild(resetBtn);
-            label.appendChild(audioControls);
+            label.textContent = instrument.charAt(0).toUpperCase() + instrument.slice(1);
             
             row.appendChild(label);
 
             const stepsContainer = document.createElement('div');
             stepsContainer.className = 'pattern-steps';
 
-            for (let i = 0; i < 16; i++) {
+            for (let i = 0; i < this.stepsPerBar; i++) {
                 const step = document.createElement('button');
                 step.className = 'pattern-step';
-                if (i % 4 === 0) step.classList.add('beat-1');
+                // Highlight every beat (every 4 steps in 4/4, every 3 steps in 3/4, every 2 steps in 6/8)
+                let stepsPerBeat;
+                if (this.timeSignature === '4/4') {
+                    stepsPerBeat = 4;
+                } else if (this.timeSignature === '3/4') {
+                    stepsPerBeat = 3;
+                } else if (this.timeSignature === '6/8') {
+                    stepsPerBeat = 2; // 6/8 has 6 beats, so every 2 steps
+                }
+                if (i % stepsPerBeat === 0) step.classList.add('beat-1');
                 step.dataset.instrument = instrument;
                 step.dataset.step = i;
                 
@@ -517,8 +578,8 @@ class TaikoMetronome {
 
     clearAllPatterns() {
         Object.keys(this.patterns).forEach(instrument => {
-            this.patterns[instrument] = Array(16).fill(false);
-            for (let i = 0; i < 16; i++) {
+            this.patterns[instrument] = Array(this.stepsPerBar).fill(false);
+            for (let i = 0; i < this.stepsPerBar; i++) {
                 this.updatePatternDisplay(instrument, i);
             }
         });
@@ -527,8 +588,8 @@ class TaikoMetronome {
 
     fillAllPatterns() {
         Object.keys(this.patterns).forEach(instrument => {
-            this.patterns[instrument] = Array(16).fill(true);
-            for (let i = 0; i < 16; i++) {
+            this.patterns[instrument] = Array(this.stepsPerBar).fill(true);
+            for (let i = 0; i < this.stepsPerBar; i++) {
                 this.updatePatternDisplay(instrument, i);
             }
         });
@@ -538,8 +599,12 @@ class TaikoMetronome {
     loadDefaultSounds() {
         // Auto-load default sound files if they exist
         const defaultSounds = {
-            odaiko: 'split_sounds/drum_hit_001.wav',
-            nagado: 'split_sounds/drum_hit_005.wav'
+            nagado: 'split_sounds/Nagado.wav',
+            odaiko: 'split_sounds/Odaiko.wav',
+            shime: 'split_sounds/Shime.wav',
+            click: 'split_sounds/Click.wav',
+            chappa: 'split_sounds/Chappa.wav',
+            kane: 'split_sounds/Kane.wav'
         };
 
         Object.keys(defaultSounds).forEach(instrument => {

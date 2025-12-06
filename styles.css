@@ -108,7 +108,34 @@ h2 {
 /* Rhythm Controls */
 .rhythm-controls {
     display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.rhythm-type {
+    display: flex;
     gap: 30px;
+}
+
+.time-signature {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.time-sig-select {
+    padding: 8px 12px;
+    background: #fff;
+    border: 2px solid #cc0000;
+    border-radius: 5px;
+    color: #333;
+    font-size: 1em;
+    cursor: pointer;
+}
+
+.time-sig-select:focus {
+    outline: none;
+    border-color: #cc0000;
 }
 
 .rhythm-controls label {
@@ -200,10 +227,6 @@ h2 {
     border-color: #667eea;
 }
 
-.audio-upload {
-    display: none;
-}
-
 .upload-text {
     color: #666;
 }
@@ -255,50 +278,6 @@ h2 {
 
 .pattern-label-text {
     min-width: 60px;
-}
-
-.pattern-audio-controls {
-    display: flex;
-    gap: 4px;
-    align-items: center;
-}
-
-.pattern-upload-btn {
-    padding: 4px 8px;
-    background: #fff;
-    border: 1px solid #e0e0e0;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 0.9em;
-    transition: all 0.2s ease;
-    color: #333;
-}
-
-.pattern-upload-btn:hover {
-    background: #cc0000;
-    color: white;
-    border-color: #cc0000;
-}
-
-.pattern-reset-btn {
-    padding: 4px 8px;
-    background: #fff;
-    border: 1px solid #e0e0e0;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 0.9em;
-    transition: all 0.2s ease;
-    color: #333;
-}
-
-.pattern-reset-btn:hover {
-    background: #cc0000;
-    color: white;
-    border-color: #cc0000;
-}
-
-.audio-upload {
-    display: none;
 }
 
 .pattern-steps {
@@ -440,6 +419,116 @@ h2 {
     background: #999;
     border-color: #999;
     color: white;
+}
+
+.preset-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+/* Pitch Controls */
+.pitch-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.pitch-row {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.instrument-label {
+    font-weight: 600;
+    color: #cc0000;
+    min-width: 80px;
+}
+
+.pitch-btn {
+    width: 40px;
+    height: 40px;
+    background: #fff;
+    border: 2px solid #cc0000;
+    color: #cc0000;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 1.5em;
+    font-weight: bold;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.pitch-btn:hover {
+    background: #cc0000;
+    color: white;
+}
+
+.pitch-btn:active {
+    transform: scale(0.95);
+}
+
+.pitch-value {
+    min-width: 35px;
+    text-align: center;
+    font-weight: 600;
+    font-size: 1.1em;
+    color: #333;
+}
+
+/* Loop Controls */
+.pitch-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.pitch-row {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.instrument-label {
+    font-weight: 600;
+    color: #cc0000;
+    min-width: 80px;
+}
+
+.pitch-btn {
+    width: 40px;
+    height: 40px;
+    background: #fff;
+    border: 2px solid #cc0000;
+    color: #cc0000;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 1.5em;
+    font-weight: bold;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.pitch-btn:hover {
+    background: #cc0000;
+    color: white;
+}
+
+.pitch-btn:active {
+    transform: scale(0.95);
+}
+
+.pitch-value {
+    min-width: 35px;
+    text-align: center;
+    font-weight: 600;
+    font-size: 1.1em;
+    color: #333;
 }
 
 /* Loop Controls */
