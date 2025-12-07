@@ -76,6 +76,10 @@ class TaikoMetronome {
         document.addEventListener('click', () => {
             if (!this.audioContext) {
                 this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                // Resume context if suspended (required for iOS)
+                if (this.audioContext.state === 'suspended') {
+                    this.audioContext.resume();
+                }
             }
         }, { once: true });
     }
@@ -308,9 +312,14 @@ class TaikoMetronome {
         // No longer needed since we removed instrument checkboxes
     }
 
-    play() {
+    async play() {
         if (!this.audioContext) {
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+
+        // Resume AudioContext if suspended (critical for iOS/mobile)
+        if (this.audioContext.state === 'suspended') {
+            await this.audioContext.resume();
         }
 
         this.isPlaying = true;
