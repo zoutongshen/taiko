@@ -109,17 +109,20 @@ h2 {
 .rhythm-controls {
     display: flex;
     flex-direction: column;
+    align-items: center;
     gap: 20px;
 }
 
 .rhythm-type {
     display: flex;
+    justify-content: center;
     gap: 30px;
 }
 
 .time-signature {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 10px;
 }
 
@@ -130,6 +133,7 @@ h2 {
     border-radius: 5px;
     color: #333;
     font-size: 1em;
+    font-weight: 600;
     cursor: pointer;
 }
 
@@ -140,6 +144,7 @@ h2 {
 
 .rhythm-controls label {
     font-size: 1.1em;
+    font-weight: 600;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -427,11 +432,12 @@ h2 {
     pointer-events: none;
 }
 
-/* Pitch Controls */
+/* Pitch & Volume Controls */
 .pitch-header {
     margin-bottom: 15px;
     display: flex;
     justify-content: flex-end;
+    gap: 10px;
 }
 
 .pitch-controls {
@@ -443,7 +449,9 @@ h2 {
 .pitch-row {
     display: flex;
     align-items: center;
-    gap: 15px;
+    justify-content: center;
+    gap: 30px;
+    flex-wrap: wrap;
 }
 
 .instrument-label {
@@ -452,7 +460,19 @@ h2 {
     min-width: 80px;
 }
 
-.pitch-btn {
+.control-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.control-label {
+    font-size: 0.95em;
+    color: #666;
+    font-weight: 600;
+}
+
+.pitch-btn, .volume-btn {
     width: 40px;
     height: 40px;
     background: #fff;
@@ -468,84 +488,41 @@ h2 {
     justify-content: center;
 }
 
-.pitch-btn:hover {
+.pitch-btn:hover, .volume-btn:hover {
     background: #cc0000;
     color: white;
 }
 
-.pitch-btn:active {
+.pitch-btn:active, .volume-btn:active {
     transform: scale(0.95);
+}
+
+.pitch-value, .volume-value {
+    text-align: center;
+    font-weight: 600;
+    font-size: 1em;
+    color: #333;
 }
 
 .pitch-value {
     min-width: 35px;
-    text-align: center;
-    font-weight: 600;
-    font-size: 1.1em;
-    color: #333;
 }
 
-/* Loop Controls */
-.pitch-controls {
-    display: flex;
-    flex-direction: column;
-    gap: 15px;
-}
-
-.pitch-row {
-    display: flex;
-    align-items: center;
-    gap: 15px;
-}
-
-.instrument-label {
-    font-weight: 600;
-    color: #cc0000;
-    min-width: 80px;
-}
-
-.pitch-btn {
-    width: 40px;
-    height: 40px;
-    background: #fff;
-    border: 2px solid #cc0000;
-    color: #cc0000;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 1.5em;
-    font-weight: bold;
-    transition: all 0.2s ease;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.pitch-btn:hover {
-    background: #cc0000;
-    color: white;
-}
-
-.pitch-btn:active {
-    transform: scale(0.95);
-}
-
-.pitch-value {
-    min-width: 35px;
-    text-align: center;
-    font-weight: 600;
-    font-size: 1.1em;
-    color: #333;
+.volume-value {
+    min-width: 50px;
 }
 
 /* Loop Controls */
 .loop-controls {
     display: flex;
     flex-direction: column;
+    align-items: center;
     gap: 15px;
 }
 
 .loop-controls label {
     font-size: 1.1em;
+    font-weight: 600;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -561,8 +538,12 @@ h2 {
 .loop-count-container {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 10px;
-    padding-left: 30px;
+}
+
+.loop-count-container label {
+    font-weight: 600;
 }
 
 .loop-count-container input {
@@ -572,6 +553,7 @@ h2 {
     border-radius: 5px;
     text-align: center;
     font-size: 1em;
+    font-weight: 600;
     background: #fff;
     color: #333;
 }
@@ -761,17 +743,37 @@ footer {
         flex-shrink: 0;
     }
 
-    /* Pitch controls */
+    /* Pitch & Volume controls */
+    .pitch-header {
+        flex-direction: column;
+        gap: 8px;
+    }
+    
+    .pitch-header .preset-btn {
+        width: 100%;
+    }
+    
     .pitch-row {
         gap: 10px;
+        flex-direction: column;
+        align-items: flex-start;
     }
 
     .instrument-label {
         min-width: 70px;
         font-size: 0.9em;
     }
+    
+    .control-group {
+        width: 100%;
+        justify-content: space-between;
+    }
+    
+    .control-label {
+        min-width: 60px;
+    }
 
-    .pitch-btn {
+    .pitch-btn, .volume-btn {
         width: 45px;
         height: 45px;
     }

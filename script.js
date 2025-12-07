@@ -53,6 +53,16 @@ class TaikoMetronome {
             kane: 0
         };
         
+        // Volume adjustments (percentage, range 0 to 150)
+        this.volumeLevels = {
+            nagado: 100,
+            odaiko: 100,
+            shime: 100,
+            click: 100,
+            chappa: 100,
+            kane: 100
+        };
+        
         this.savedPatterns = this.loadSavedPatterns();
         
         this.initializeAudio();
@@ -174,6 +184,18 @@ class TaikoMetronome {
         
         // Reset all pitch button
         document.getElementById('reset-all-pitch-btn').addEventListener('click', () => this.resetAllPitch());
+        
+        // Volume adjustment buttons
+        document.querySelectorAll('.volume-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const instrument = e.target.dataset.instrument;
+                const direction = e.target.dataset.direction;
+                this.adjustVolume(instrument, direction);
+            });
+        });
+        
+        // Reset all volume button
+        document.getElementById('reset-all-volume-btn').addEventListener('click', () => this.resetAllVolume());
     }
 
     savePattern() {
@@ -401,8 +423,10 @@ class TaikoMetronome {
                 source.playbackRate.value = Math.pow(2, pitchOffset / 12);
             }
             
+            // Apply volume adjustment
             const gainNode = this.audioContext.createGain();
-            gainNode.gain.value = 0.7;
+            const volumeLevel = (this.volumeLevels[instrument] || 100) / 100;
+            gainNode.gain.value = 0.7 * volumeLevel;
             
             source.connect(gainNode);
             gainNode.connect(this.audioContext.destination);
@@ -457,6 +481,26 @@ class TaikoMetronome {
             document.getElementById(`pitch-${instrument}`).textContent = '0';
         });
         this.showNotification('All pitch adjustments reset to 0');
+    }
+
+    adjustVolume(instrument, direction) {
+        const change = direction === 'up' ? 10 : -10;
+        const newVolume = this.volumeLevels[instrument] + change;
+        
+        // Limit range to 0 to 150%
+        if (newVolume >= 0 && newVolume <= 150) {
+            this.volumeLevels[instrument] = newVolume;
+            document.getElementById(`volume-${instrument}`).textContent = `${newVolume}%`;
+            this.showNotification(`${instrument}: ${newVolume}% volume`);
+        }
+    }
+
+    resetAllVolume() {
+        Object.keys(this.volumeLevels).forEach(instrument => {
+            this.volumeLevels[instrument] = 100;
+            document.getElementById(`volume-${instrument}`).textContent = '100%';
+        });
+        this.showNotification('All volume levels reset to 100%');
     }
 
     updateBeatIndicator() {
@@ -561,6 +605,10 @@ class TaikoMetronome {
     toggleStep(instrument, stepIndex) {
         this.patterns[instrument][stepIndex] = !this.patterns[instrument][stepIndex];
         this.updatePatternDisplay(instrument, stepIndex);
+        // Play sound when activating a step
+        if (this.patterns[instrument][stepIndex]) {
+            this.playSound(instrument);
+        }
     }
 
     updatePatternDisplay(instrument, stepIndex) {

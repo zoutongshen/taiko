@@ -7,7 +7,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#cc0000">
     <title>Taiko Metronome</title>
-    <link rel="stylesheet" href="styles.css?v=2">
+    <link rel="stylesheet" href="styles.css?v=3">
 </head>
 <body>
     <div class="container">
@@ -85,48 +85,103 @@
                 </div>
             </section>
 
-            <!-- Pitch Control Section -->
+            <!-- Pitch & Volume Control Section -->
             <section class="pitch-section">
-                <h2>Pitch Adjustment</h2>
+                <h2>Pitch & Volume Adjustment</h2>
                 <div class="pitch-header">
                     <button id="reset-all-pitch-btn" class="preset-btn">Reset All Pitch</button>
+                    <button id="reset-all-volume-btn" class="preset-btn">Reset All Volume</button>
                 </div>
                 <div class="pitch-controls">
                     <div class="pitch-row">
                         <span class="instrument-label">Nagado:</span>
-                        <button class="pitch-btn" data-instrument="nagado" data-direction="down">−</button>
-                        <span class="pitch-value" id="pitch-nagado">0</span>
-                        <button class="pitch-btn" data-instrument="nagado" data-direction="up">+</button>
+                        <span class="control-group">
+                            <span class="control-label">Pitch</span>
+                            <button class="pitch-btn" data-instrument="nagado" data-direction="down">−</button>
+                            <span class="pitch-value" id="pitch-nagado">0</span>
+                            <button class="pitch-btn" data-instrument="nagado" data-direction="up">+</button>
+                        </span>
+                        <span class="control-group">
+                            <span class="control-label">Volume</span>
+                            <button class="volume-btn" data-instrument="nagado" data-direction="down">−</button>
+                            <span class="volume-value" id="volume-nagado">100%</span>
+                            <button class="volume-btn" data-instrument="nagado" data-direction="up">+</button>
+                        </span>
                     </div>
                     <div class="pitch-row">
                         <span class="instrument-label">Odaiko:</span>
-                        <button class="pitch-btn" data-instrument="odaiko" data-direction="down">−</button>
-                        <span class="pitch-value" id="pitch-odaiko">0</span>
-                        <button class="pitch-btn" data-instrument="odaiko" data-direction="up">+</button>
+                        <span class="control-group">
+                            <span class="control-label">Pitch</span>
+                            <button class="pitch-btn" data-instrument="odaiko" data-direction="down">−</button>
+                            <span class="pitch-value" id="pitch-odaiko">0</span>
+                            <button class="pitch-btn" data-instrument="odaiko" data-direction="up">+</button>
+                        </span>
+                        <span class="control-group">
+                            <span class="control-label">Volume</span>
+                            <button class="volume-btn" data-instrument="odaiko" data-direction="down">−</button>
+                            <span class="volume-value" id="volume-odaiko">100%</span>
+                            <button class="volume-btn" data-instrument="odaiko" data-direction="up">+</button>
+                        </span>
                     </div>
                     <div class="pitch-row">
                         <span class="instrument-label">Shime:</span>
-                        <button class="pitch-btn" data-instrument="shime" data-direction="down">−</button>
-                        <span class="pitch-value" id="pitch-shime">0</span>
-                        <button class="pitch-btn" data-instrument="shime" data-direction="up">+</button>
+                        <span class="control-group">
+                            <span class="control-label">Pitch</span>
+                            <button class="pitch-btn" data-instrument="shime" data-direction="down">−</button>
+                            <span class="pitch-value" id="pitch-shime">0</span>
+                            <button class="pitch-btn" data-instrument="shime" data-direction="up">+</button>
+                        </span>
+                        <span class="control-group">
+                            <span class="control-label">Volume</span>
+                            <button class="volume-btn" data-instrument="shime" data-direction="down">−</button>
+                            <span class="volume-value" id="volume-shime">100%</span>
+                            <button class="volume-btn" data-instrument="shime" data-direction="up">+</button>
+                        </span>
                     </div>
                     <div class="pitch-row">
                         <span class="instrument-label">Click:</span>
-                        <button class="pitch-btn" data-instrument="click" data-direction="down">−</button>
-                        <span class="pitch-value" id="pitch-click">0</span>
-                        <button class="pitch-btn" data-instrument="click" data-direction="up">+</button>
+                        <span class="control-group">
+                            <span class="control-label">Pitch</span>
+                            <button class="pitch-btn" data-instrument="click" data-direction="down">−</button>
+                            <span class="pitch-value" id="pitch-click">0</span>
+                            <button class="pitch-btn" data-instrument="click" data-direction="up">+</button>
+                        </span>
+                        <span class="control-group">
+                            <span class="control-label">Volume</span>
+                            <button class="volume-btn" data-instrument="click" data-direction="down">−</button>
+                            <span class="volume-value" id="volume-click">100%</span>
+                            <button class="volume-btn" data-instrument="click" data-direction="up">+</button>
+                        </span>
                     </div>
                     <div class="pitch-row">
                         <span class="instrument-label">Chappa:</span>
-                        <button class="pitch-btn" data-instrument="chappa" data-direction="down">−</button>
-                        <span class="pitch-value" id="pitch-chappa">0</span>
-                        <button class="pitch-btn" data-instrument="chappa" data-direction="up">+</button>
+                        <span class="control-group">
+                            <span class="control-label">Pitch</span>
+                            <button class="pitch-btn" data-instrument="chappa" data-direction="down">−</button>
+                            <span class="pitch-value" id="pitch-chappa">0</span>
+                            <button class="pitch-btn" data-instrument="chappa" data-direction="up">+</button>
+                        </span>
+                        <span class="control-group">
+                            <span class="control-label">Volume</span>
+                            <button class="volume-btn" data-instrument="chappa" data-direction="down">−</button>
+                            <span class="volume-value" id="volume-chappa">100%</span>
+                            <button class="volume-btn" data-instrument="chappa" data-direction="up">+</button>
+                        </span>
                     </div>
                     <div class="pitch-row">
                         <span class="instrument-label">Kane:</span>
-                        <button class="pitch-btn" data-instrument="kane" data-direction="down">−</button>
-                        <span class="pitch-value" id="pitch-kane">0</span>
-                        <button class="pitch-btn" data-instrument="kane" data-direction="up">+</button>
+                        <span class="control-group">
+                            <span class="control-label">Pitch</span>
+                            <button class="pitch-btn" data-instrument="kane" data-direction="down">−</button>
+                            <span class="pitch-value" id="pitch-kane">0</span>
+                            <button class="pitch-btn" data-instrument="kane" data-direction="up">+</button>
+                        </span>
+                        <span class="control-group">
+                            <span class="control-label">Volume</span>
+                            <button class="volume-btn" data-instrument="kane" data-direction="down">−</button>
+                            <span class="volume-value" id="volume-kane">100%</span>
+                            <button class="volume-btn" data-instrument="kane" data-direction="up">+</button>
+                        </span>
                     </div>
                 </div>
             </section>
@@ -152,7 +207,7 @@
         </main>
 
         <footer>
-            <p>Taiko Metronome - Practice with traditional Japanese percussion sounds</p>
+            <p>Made with love by Zoutong from 🇳🇱</p>
         </footer>
     </div>
 
