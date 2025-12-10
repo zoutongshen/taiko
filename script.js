@@ -29,6 +29,16 @@ class TaikoMetronome {
             kane: null
         };
         
+        // HTML5 Audio elements for better iOS compatibility
+        this.audioElements = {
+            nagado: null,
+            odaiko: null,
+            shime: null,
+            click: null,
+            chappa: null,
+            kane: null
+        };
+        
         this.patterns = {
             nagado: Array(16).fill(false),
             odaiko: Array(16).fill(false),
@@ -433,6 +443,25 @@ class TaikoMetronome {
     }
 
     async playSound(instrument) {
+        const pitchOffset = this.pitchOffsets[instrument] || 0;
+        const volumeLevel = (this.volumeLevels[instrument] || 100) / 100;
+        
+        // Use HTML5 Audio for iOS media channel routing when no pitch adjustment
+        if (pitchOffset === 0 && this.audioElements[instrument]) {
+            const audio = this.audioElements[instrument];
+            
+            // Clone the audio element to allow overlapping plays
+            const clone = audio.cloneNode();
+            clone.volume = 0.7 * volumeLevel;
+            
+            // Play and remove when done
+            clone.play().catch(err => console.warn('Audio play failed:', err));
+            clone.addEventListener('ended', () => clone.remove());
+            
+            return;
+        }
+        
+        // Use Web Audio API when pitch adjustment is needed
         if (!this.audioContext) {
             console.warn('No AudioContext available');
             return;
@@ -449,7 +478,6 @@ class TaikoMetronome {
             source.buffer = this.audioBuffers[instrument];
             
             // Apply pitch shifting
-            const pitchOffset = this.pitchOffsets[instrument] || 0;
             if (pitchOffset !== 0) {
                 // Calculate playback rate: 2^(semitones/12)
                 source.playbackRate.value = Math.pow(2, pitchOffset / 12);
@@ -457,7 +485,6 @@ class TaikoMetronome {
             
             // Apply volume adjustment
             const gainNode = this.audioContext.createGain();
-            const volumeLevel = (this.volumeLevels[instrument] || 100) / 100;
             gainNode.gain.value = 0.7 * volumeLevel;
             
             source.connect(gainNode);
@@ -689,7 +716,7 @@ class TaikoMetronome {
     }
 
     loadDefaultSounds() {
-        // Auto-load default sound files if they exist
+        // Load sounds using both HTML5 Audio (for iOS media channel) and Web Audio API (for pitch control)
         const defaultSounds = {
             nagado: 'split_sounds/Nagado.wav',
             odaiko: 'split_sounds/Odaiko.wav',
@@ -701,6 +728,14 @@ class TaikoMetronome {
 
         Object.keys(defaultSounds).forEach(instrument => {
             const soundPath = defaultSounds[instrument];
+            
+            // Create HTML5 Audio element for iOS media channel routing
+            const audio = new Audio(soundPath);
+            audio.preload = 'auto';
+            audio.load();
+            this.audioElements[instrument] = audio;
+            
+            // Also load into Web Audio API for pitch control
             fetch(soundPath)
                 .then(response => response.arrayBuffer())
                 .then(arrayBuffer => {
