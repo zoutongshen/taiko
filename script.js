@@ -446,13 +446,19 @@ class TaikoMetronome {
         const pitchOffset = this.pitchOffsets[instrument] || 0;
         const volumeLevel = (this.volumeLevels[instrument] || 100) / 100;
         
-        // Use HTML5 Audio for iOS media channel routing when no pitch adjustment
-        if (pitchOffset === 0 && this.audioElements[instrument]) {
+        // Always use HTML5 Audio for iOS media channel routing
+        if (this.audioElements[instrument]) {
             const audio = this.audioElements[instrument];
             
             // Clone the audio element to allow overlapping plays
             const clone = audio.cloneNode();
             clone.volume = 0.7 * volumeLevel;
+            
+            // Apply pitch shift via playbackRate (limited but works in media channel)
+            if (pitchOffset !== 0) {
+                // HTML5 Audio playbackRate for pitch (not as good as Web Audio but routes correctly)
+                clone.playbackRate = Math.pow(2, pitchOffset / 12);
+            }
             
             // Play and remove when done
             clone.play().catch(err => console.warn('Audio play failed:', err));
@@ -461,9 +467,9 @@ class TaikoMetronome {
             return;
         }
         
-        // Use Web Audio API when pitch adjustment is needed
+        // Fallback to Web Audio API if HTML5 Audio not loaded
         if (!this.audioContext) {
-            console.warn('No AudioContext available');
+            console.warn('No audio available');
             return;
         }
         
@@ -472,7 +478,7 @@ class TaikoMetronome {
             await this.audioContext.resume();
         }
 
-        // If custom audio buffer exists, use it
+        // Use Web Audio buffer as fallback
         if (this.audioBuffers[instrument]) {
             const source = this.audioContext.createBufferSource();
             source.buffer = this.audioBuffers[instrument];
