@@ -1,9 +1,53 @@
 // Taiko Metronome Application
 
+// One table driving every per-instrument structure: sequencer rows, pitch and
+// volume controls, sample loading. Add an instrument here and it shows up
+// everywhere.
+const INSTRUMENTS = [
+    { id: 'nagado', label: 'Nagado', file: 'split_sounds/Nagado.wav' },
+    { id: 'odaiko', label: 'Odaiko', file: 'split_sounds/Odaiko.wav' },
+    { id: 'shime',  label: 'Shime',  file: 'split_sounds/Shime.wav' },
+    { id: 'click',  label: 'Click',  file: 'split_sounds/Click.wav' },
+    { id: 'chappa', label: 'Chappa', file: 'split_sounds/Chappa.wav' },
+    { id: 'kane',   label: 'Kane',   file: 'split_sounds/Kane.wav' }
+];
+const INSTRUMENT_IDS = INSTRUMENTS.map(instrument => instrument.id);
+const INSTRUMENT_LABELS = Object.fromEntries(INSTRUMENTS.map(({ id, label }) => [id, label]));
+
+const PITCH_RANGE = { min: -5, max: 5, step: 1 };          // semitones
+const VOLUME_RANGE = { min: 0, max: 150, step: 10, default: 100 };  // percent
+
+// A step is a 16th note, so a bar of 4/4 is 16 of them. beatsPerBar is what the
+// bar is *counted* in, which is not the same thing: 6/8 is felt in two
+// dotted-quarter beats rather than six eighths.
+const TIME_SIGNATURES = {
+    '4/4': { stepsPerBar: 16, beatsPerBar: 4 },
+    '3/4': { stepsPerBar: 12, beatsPerBar: 3 },
+    '6/8': { stepsPerBar: 12, beatsPerBar: 2 }
+};
+const DEFAULT_TIME_SIGNATURE = '4/4';
+
 // A dotted step takes 3/4 of its pair; the step after it gets the rest.
 const DOTTED_SPLIT = 0.75;
 const LONG_PRESS_MS = 450;
 const LONG_PRESS_SLOP_PX = 10;
+
+// If the clock falls further behind than this - a backgrounded tab, usually -
+// drop the missed steps and pick up the grid again, rather than machine-gunning
+// through everything that was skipped.
+const RESYNC_THRESHOLD_MS = 250;
+
+const NOTIFICATION_MS = 2000;
+
+// Synthesised stand-ins, used only if the samples fail to load.
+const SOUND_PROFILES = {
+    nagado: { frequency: 200,  duration: 0.3,  type: 'sine' },
+    odaiko: { frequency: 100,  duration: 0.5,  type: 'sine' },
+    shime:  { frequency: 400,  duration: 0.15, type: 'sine' },
+    click:  { frequency: 600,  duration: 0.2,  type: 'square' },
+    chappa: { frequency: 2000, duration: 0.1,  type: 'square' },
+    kane:   { frequency: 1500, duration: 0.25, type: 'triangle' }
+};
 
 class TaikoMetronome {
     constructor() {
@@ -13,50 +57,20 @@ class TaikoMetronome {
         this.rhythmType = 'regular';
         this.loopCount = 4;
         this.currentBar = 0;
-        this.currentBeat = 0;
-        this.beatsPerBar = 4;
+        this.currentStep = 0;
         this.intervalId = null;
         this.audioContext = null;
-        this.instruments = {
-            nagado: false,
-            odaiko: false,
-            shime: false,
-            kiai: false,
-            chappa: false,
-            kane: false
-        };
-        this.audioBuffers = {
-            nagado: null,
-            odaiko: null,
-            shime: null,
-            kiai: null,
-            chappa: null,
-            kane: null
-        };
-        
-        // HTML5 Audio elements for better iOS compatibility
-        this.audioElements = {
-            nagado: null,
-            odaiko: null,
-            shime: null,
-            click: null,
-            chappa: null,
-            kane: null
-        };
-        
-        this.patterns = {
-            nagado: Array(16).fill(false),
-            odaiko: Array(16).fill(false),
-            shime: Array(16).fill(false),
-            click: Array(16).fill(false),
-            chappa: Array(16).fill(false),
-            kane: Array(16).fill(false)
-        };
-        
-        this.usePatternMode = false;
-        this.currentStep = 0;
-        this.timeSignature = '4/4';
-        this.stepsPerBar = 16;
+
+        this.timeSignature = DEFAULT_TIME_SIGNATURE;
+        this.stepsPerBar = TIME_SIGNATURES[DEFAULT_TIME_SIGNATURE].stepsPerBar;
+        this.beatsPerBar = TIME_SIGNATURES[DEFAULT_TIME_SIGNATURE].beatsPerBar;
+
+        // Samples are held twice over: HTML5 Audio routes to the iOS media
+        // channel, Web Audio is the fallback when an element has not loaded.
+        this.audioElements = this.perInstrument(null);
+        this.audioBuffers = this.perInstrument(null);
+
+        this.patterns = this.emptyStepArrays();
 
         // Dotted-note markers, parallel to patterns. A dot on a step makes that
         // instrument's hit on the following step land late, so the pair splits
@@ -65,33 +79,37 @@ class TaikoMetronome {
 
         // Timeouts for hits a dot has pushed late, so stop() can cancel them.
         this.pendingHits = [];
-        
-        // Pitch adjustments (in semitones, range -5 to +5)
-        this.pitchOffsets = {
-            nagado: 0,
-            odaiko: 0,
-            shime: 0,
-            click: 0,
-            chappa: 0,
-            kane: 0
-        };
-        
-        // Volume adjustments (percentage, range 0 to 150)
-        this.volumeLevels = {
-            nagado: 100,
-            odaiko: 100,
-            shime: 100,
-            click: 100,
-            chappa: 100,
-            kane: 100
-        };
-        
+
+        // When the current step falls due, kept in absolute time so a long
+        // practice session cannot accumulate drift.
+        this.nextStepAt = 0;
+
+        this.pitchOffsets = this.perInstrument(0);
+        this.volumeLevels = this.perInstrument(VOLUME_RANGE.default);
+
+        // The status line underneath the transport, and the pending restore for
+        // whatever notification is currently covering it.
+        this.statusText = 'Ready';
+        this.notificationTimer = null;
+
         this.savedPatterns = this.loadSavedPatterns();
-        
+
         this.initializeAudio();
         this.setupEventListeners();
         this.updateUI();
         this.loadDefaultSounds();
+    }
+
+    // How many sequencer steps make up one counted beat.
+    get stepsPerBeat() {
+        return this.stepsPerBar / this.beatsPerBar;
+    }
+
+    // A fresh { instrumentId: value } map.
+    perInstrument(value) {
+        const map = {};
+        INSTRUMENT_IDS.forEach(id => { map[id] = value; });
+        return map;
     }
 
     initializeAudio() {
@@ -158,14 +176,11 @@ class TaikoMetronome {
         // Time signature selector
         const timeSigSelect = document.getElementById('time-sig');
         timeSigSelect.addEventListener('change', (e) => {
-            this.timeSignature = e.target.value;
-            if (this.timeSignature === '4/4') {
-                this.stepsPerBar = 16;
-            } else if (this.timeSignature === '3/4' || this.timeSignature === '6/8') {
-                this.stepsPerBar = 12;
-            }
-            this.regeneratePatternGrid();
-            this.showNotification(`Time signature: ${this.timeSignature}`);
+            this.applyTimeSignature(e.target.value);
+            const dropped = this.regeneratePatternGrid();
+            this.showNotification(dropped
+                ? `Time signature: ${this.timeSignature} - ${dropped} hit${dropped === 1 ? '' : 's'} past the new bar end were dropped`
+                : `Time signature: ${this.timeSignature}`);
         });
 
         // Save/Load pattern buttons
@@ -215,29 +230,79 @@ class TaikoMetronome {
         document.getElementById('clear-pattern-btn').addEventListener('click', () => this.clearAllPatterns());
         document.getElementById('fill-pattern-btn').addEventListener('click', () => this.fillAllPatterns());
         
-        // Pitch adjustment buttons
-        document.querySelectorAll('.pitch-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const instrument = e.target.dataset.instrument;
-                const direction = e.target.dataset.direction;
-                this.adjustPitch(instrument, direction);
-            });
-        });
-        
-        // Reset all pitch button
+        this.initializePitchControls();
         document.getElementById('reset-all-pitch-btn').addEventListener('click', () => this.resetAllPitch());
-        
-        // Volume adjustment buttons
-        document.querySelectorAll('.volume-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const instrument = e.target.dataset.instrument;
-                const direction = e.target.dataset.direction;
-                this.adjustVolume(instrument, direction);
-            });
-        });
-        
-        // Reset all volume button
         document.getElementById('reset-all-volume-btn').addEventListener('click', () => this.resetAllVolume());
+    }
+
+    initializePitchControls() {
+        const container = document.getElementById('pitch-controls');
+        container.innerHTML = '';
+
+        INSTRUMENTS.forEach(({ id, label }) => {
+            const row = document.createElement('div');
+            row.className = 'pitch-row';
+
+            const name = document.createElement('span');
+            name.className = 'instrument-label';
+            name.textContent = `${label}:`;
+            row.appendChild(name);
+
+            row.appendChild(this.buildAdjuster('Pitch', `pitch-${id}`, 'pitch-value',
+                direction => this.adjustPitch(id, direction)));
+            row.appendChild(this.buildAdjuster('Volume', `volume-${id}`, 'volume-value',
+                direction => this.adjustVolume(id, direction)));
+
+            container.appendChild(row);
+        });
+
+        this.updatePitchDisplay();
+        this.updateVolumeDisplay();
+    }
+
+    // A [- value +] cluster wired straight to its handler.
+    buildAdjuster(labelText, valueId, valueClass, onAdjust) {
+        const group = document.createElement('span');
+        group.className = 'control-group';
+
+        const label = document.createElement('span');
+        label.className = 'control-label';
+        label.textContent = labelText;
+        group.appendChild(label);
+
+        const buttonClass = labelText.toLowerCase() + '-btn';
+
+        const down = document.createElement('button');
+        down.className = buttonClass;
+        down.textContent = '\u2212';
+        down.addEventListener('click', () => onAdjust('down'));
+        group.appendChild(down);
+
+        const value = document.createElement('span');
+        value.className = valueClass;
+        value.id = valueId;
+        group.appendChild(value);
+
+        const up = document.createElement('button');
+        up.className = buttonClass;
+        up.textContent = '+';
+        up.addEventListener('click', () => onAdjust('up'));
+        group.appendChild(up);
+
+        return group;
+    }
+
+    updatePitchDisplay() {
+        INSTRUMENT_IDS.forEach(id => {
+            const offset = this.pitchOffsets[id];
+            document.getElementById(`pitch-${id}`).textContent = offset > 0 ? `+${offset}` : `${offset}`;
+        });
+    }
+
+    updateVolumeDisplay() {
+        INSTRUMENT_IDS.forEach(id => {
+            document.getElementById(`volume-${id}`).textContent = `${this.volumeLevels[id]}%`;
+        });
     }
 
     savePattern() {
@@ -271,49 +336,29 @@ class TaikoMetronome {
             return;
         }
         
-        if (this.savedPatterns[name]) {
-            const savedData = this.savedPatterns[name];
-            
-            // Check if this is old format (just patterns) or new format (with metadata)
-            const isOldFormat = Array.isArray(savedData.nagado);
-            
-            if (isOldFormat) {
-                // Old format: just load patterns
-                this.patterns = JSON.parse(JSON.stringify(savedData));
-                this.dottedSteps = this.emptyStepArrays();
-            } else {
-                // New format: restore time signature and patterns
-                const savedTimeSignature = savedData.timeSignature || '4/4';
-                const savedStepsPerBar = savedData.stepsPerBar || 16;
-                
-                // Switch time signature if different
-                if (this.timeSignature !== savedTimeSignature) {
-                    this.timeSignature = savedTimeSignature;
-                    this.stepsPerBar = savedStepsPerBar;
-                    
-                    // Update the time signature selector
-                    const timeSigSelect = document.getElementById('time-sig');
-                    timeSigSelect.value = this.timeSignature;
-                    
-                    // Regenerate grid
-                    this.regeneratePatternGrid();
-                }
-                
-                this.patterns = JSON.parse(JSON.stringify(savedData.patterns));
-                // Saves made before dotted notes existed simply have none.
-                this.dottedSteps = this.normalizeStepArrays(savedData.dotted);
-            }
-            
-            // Update UI
-            Object.keys(this.patterns).forEach(instrument => {
-                for (let i = 0; i < this.patterns[instrument].length; i++) {
-                    this.updatePatternDisplay(instrument, i);
-                }
-            });
-            
-            const timeSigInfo = isOldFormat ? '' : ` (${this.timeSignature})`;
-            this.showNotification(`Pattern "${name}" loaded${timeSigInfo}!`);
+        if (!this.savedPatterns[name]) return;
+
+        const savedData = this.savedPatterns[name];
+        // Oldest saves were the bare patterns object, with no metadata at all.
+        const isOldFormat = Array.isArray(savedData.nagado);
+
+        if (isOldFormat) {
+            this.patterns = this.normalizeStepArrays(savedData);
+            this.dottedSteps = this.emptyStepArrays();
+        } else {
+            this.applyTimeSignature(savedData.timeSignature || DEFAULT_TIME_SIGNATURE);
+            document.getElementById('time-sig').value = this.timeSignature;
+
+            this.patterns = this.normalizeStepArrays(savedData.patterns);
+            // Saves made before dotted notes existed simply have none.
+            this.dottedSteps = this.normalizeStepArrays(savedData.dotted);
+            this.rebuildPatternGrid();
         }
+
+        this.refreshPatternDisplay();
+
+        const timeSigInfo = isOldFormat ? '' : ` (${this.timeSignature})`;
+        this.showNotification(`Pattern "${name}" loaded${timeSigInfo}!`);
     }
 
     deletePattern() {
@@ -353,9 +398,7 @@ class TaikoMetronome {
     // A false-filled array per instrument, matching the current bar length.
     emptyStepArrays(length = this.stepsPerBar) {
         const arrays = {};
-        Object.keys(this.patterns).forEach(instrument => {
-            arrays[instrument] = Array(length).fill(false);
-        });
+        INSTRUMENT_IDS.forEach(id => { arrays[id] = Array(length).fill(false); });
         return arrays;
     }
 
@@ -375,10 +418,6 @@ class TaikoMetronome {
         return arrays;
     }
 
-    updateInstrumentUI() {
-        // No longer needed since we removed instrument checkboxes
-    }
-
     async play() {
         if (!this.audioContext) {
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -391,12 +430,12 @@ class TaikoMetronome {
 
         this.isPlaying = true;
         this.currentBar = 0;
-        this.currentBeat = 0;
         this.currentStep = 0;
-        
+        this.nextStepAt = performance.now();
+
         document.getElementById('play-btn').disabled = true;
         document.getElementById('stop-btn').disabled = false;
-        document.getElementById('status-text').textContent = 'Playing...';
+        this.setStatus('Playing...');
 
         this.scheduleBeat();
     }
@@ -417,7 +456,7 @@ class TaikoMetronome {
 
         document.getElementById('play-btn').disabled = false;
         document.getElementById('stop-btn').disabled = true;
-        document.getElementById('status-text').textContent = 'Stopped';
+        this.setStatus('Stopped');
         document.getElementById('beat-indicator').textContent = '';
     }
 
@@ -430,30 +469,31 @@ class TaikoMetronome {
             return;
         }
 
-        // Calculate CURRENT beat timing BEFORE playing
-        const beatDuration = this.calculateBeatDuration();
-
-        // Play selected instruments
         this.playInstruments();
-
-        // Update beat indicator
         this.updateBeatIndicator();
-        
-        // Move to next beat
-        this.currentBeat++;
+
+        const duration = this.stepDuration(this.currentStep);
+
+        // The bar is just the step counter wrapping; deriving it keeps the two
+        // from disagreeing, and makes the bar limit count real bars.
         this.currentStep++;
-        
         if (this.currentStep >= this.stepsPerBar) {
             this.currentStep = 0;
-        }
-        
-        if (this.currentBeat >= this.beatsPerBar) {
-            this.currentBeat = 0;
             this.currentBar++;
         }
 
-        // Schedule next beat
-        this.intervalId = setTimeout(() => this.scheduleBeat(), beatDuration);
+        // Aim at an absolute time rather than sleeping a fixed span, so a step
+        // that fires late steals from its own delay instead of pushing back
+        // everything after it. Sleeping fixed spans compounds the error.
+        this.nextStepAt += duration;
+        const now = performance.now();
+        if (now - this.nextStepAt > RESYNC_THRESHOLD_MS) {
+            // Too far behind to catch up musically (a backgrounded tab);
+            // drop the missed steps instead of firing them all at once.
+            this.nextStepAt = now;
+        }
+
+        this.intervalId = setTimeout(() => this.scheduleBeat(), Math.max(0, this.nextStepAt - now));
     }
 
     calculateBeatDuration() {
@@ -495,10 +535,11 @@ class TaikoMetronome {
             if (!this.patterns[instrument][this.currentStep]) return;
 
             if (delay > 0 && this.dottedSteps[instrument][previousStep]) {
+                const untilOnset = Math.max(0, this.nextStepAt + delay - performance.now());
                 const timeoutId = setTimeout(() => {
                     this.pendingHits = this.pendingHits.filter(id => id !== timeoutId);
                     this.playSound(instrument);
-                }, delay);
+                }, untilOnset);
                 this.pendingHits.push(timeoutId);
             } else {
                 this.playSound(instrument);
@@ -570,17 +611,7 @@ class TaikoMetronome {
             oscillator.connect(gainNode);
             gainNode.connect(this.audioContext.destination);
 
-            // Different frequencies and envelopes for different instruments
-            const soundProfiles = {
-                nagado: { frequency: 200, duration: 0.3, type: 'sine' },
-                odaiko: { frequency: 100, duration: 0.5, type: 'sine' },
-                shime: { frequency: 400, duration: 0.15, type: 'sine' },
-                click: { frequency: 600, duration: 0.2, type: 'square' },
-                chappa: { frequency: 2000, duration: 0.1, type: 'square' },
-                kane: { frequency: 1500, duration: 0.25, type: 'triangle' }
-            };
-
-            const profile = soundProfiles[instrument];
+            const profile = SOUND_PROFILES[instrument];
             oscillator.type = profile.type;
             oscillator.frequency.setValueAtTime(profile.frequency, this.audioContext.currentTime);
             
@@ -594,51 +625,42 @@ class TaikoMetronome {
     }
 
     adjustPitch(instrument, direction) {
-        const change = direction === 'up' ? 1 : -1;
+        const change = direction === 'up' ? PITCH_RANGE.step : -PITCH_RANGE.step;
         const newPitch = this.pitchOffsets[instrument] + change;
-        
-        // Limit range to -5 to +5 semitones
-        if (newPitch >= -5 && newPitch <= 5) {
-            this.pitchOffsets[instrument] = newPitch;
-            document.getElementById(`pitch-${instrument}`).textContent = newPitch > 0 ? `+${newPitch}` : newPitch;
-            this.showNotification(`${instrument}: ${newPitch > 0 ? '+' : ''}${newPitch} semitones`);
-        }
+        if (newPitch < PITCH_RANGE.min || newPitch > PITCH_RANGE.max) return;
+
+        this.pitchOffsets[instrument] = newPitch;
+        this.updatePitchDisplay();
+        this.showNotification(`${INSTRUMENT_LABELS[instrument]}: ${newPitch > 0 ? '+' : ''}${newPitch} semitones`);
     }
 
     resetAllPitch() {
-        Object.keys(this.pitchOffsets).forEach(instrument => {
-            this.pitchOffsets[instrument] = 0;
-            document.getElementById(`pitch-${instrument}`).textContent = '0';
-        });
+        this.pitchOffsets = this.perInstrument(0);
+        this.updatePitchDisplay();
         this.showNotification('All pitch adjustments reset to 0');
     }
 
     adjustVolume(instrument, direction) {
-        const change = direction === 'up' ? 10 : -10;
+        const change = direction === 'up' ? VOLUME_RANGE.step : -VOLUME_RANGE.step;
         const newVolume = this.volumeLevels[instrument] + change;
-        
-        // Limit range to 0 to 150%
-        if (newVolume >= 0 && newVolume <= 150) {
-            this.volumeLevels[instrument] = newVolume;
-            document.getElementById(`volume-${instrument}`).textContent = `${newVolume}%`;
-            this.showNotification(`${instrument}: ${newVolume}% volume`);
-        }
+        if (newVolume < VOLUME_RANGE.min || newVolume > VOLUME_RANGE.max) return;
+
+        this.volumeLevels[instrument] = newVolume;
+        this.updateVolumeDisplay();
+        this.showNotification(`${INSTRUMENT_LABELS[instrument]}: ${newVolume}% volume`);
     }
 
     resetAllVolume() {
-        Object.keys(this.volumeLevels).forEach(instrument => {
-            this.volumeLevels[instrument] = 100;
-            document.getElementById(`volume-${instrument}`).textContent = '100%';
-        });
-        this.showNotification('All volume levels reset to 100%');
+        this.volumeLevels = this.perInstrument(VOLUME_RANGE.default);
+        this.updateVolumeDisplay();
+        this.showNotification(`All volume levels reset to ${VOLUME_RANGE.default}%`);
     }
 
     updateBeatIndicator() {
         const indicator = document.getElementById('beat-indicator');
-        const beatNum = (this.currentBeat % this.beatsPerBar) + 1;
-        const barNum = this.currentBar + 1;
-        
-        indicator.textContent = `Bar ${barNum} | Beat ${beatNum} | Step ${this.currentStep + 1}`;
+        const beatNum = Math.floor(this.currentStep / this.stepsPerBeat) + 1;
+
+        indicator.textContent = `Bar ${this.currentBar + 1} | Beat ${beatNum} | Step ${this.currentStep + 1}`;
     }
 
     updateUI() {
@@ -655,48 +677,105 @@ class TaikoMetronome {
 
 
 
-    showNotification(message, isError = false) {
+    // The transport state underneath any transient message.
+    setStatus(text) {
+        this.statusText = text;
+        clearTimeout(this.notificationTimer);
+        this.notificationTimer = null;
+
         const statusText = document.getElementById('status-text');
-        const originalText = statusText.textContent;
-        const originalColor = statusText.style.color;
-        
-        statusText.textContent = message;
-        statusText.style.color = isError ? '#999' : '#cc0000';
-        
-        setTimeout(() => {
-            statusText.textContent = originalText;
-            statusText.style.color = originalColor;
-        }, 2000);
+        statusText.textContent = text;
+        statusText.style.color = '';
     }
 
-    regeneratePatternGrid() {
-        // Clear and rebuild pattern grid
+    showNotification(message, isError = false) {
+        const statusText = document.getElementById('status-text');
+        statusText.textContent = message;
+        statusText.style.color = isError ? '#999' : '#cc0000';
+
+        // Always restore the transport state, never whatever message happened
+        // to be on screen: two notifications inside the window used to leave
+        // the first one stranded there for good.
+        clearTimeout(this.notificationTimer);
+        this.notificationTimer = setTimeout(() => {
+            this.notificationTimer = null;
+            statusText.textContent = this.statusText;
+            statusText.style.color = '';
+        }, NOTIFICATION_MS);
+    }
+
+    applyTimeSignature(name) {
+        const signature = TIME_SIGNATURES[name];
+        this.timeSignature = signature ? name : DEFAULT_TIME_SIGNATURE;
+        const resolved = signature || TIME_SIGNATURES[DEFAULT_TIME_SIGNATURE];
+        this.stepsPerBar = resolved.stepsPerBar;
+        this.beatsPerBar = resolved.beatsPerBar;
+    }
+
+    // Rebuild the squares for the current bar length, leaving the pattern alone.
+    rebuildPatternGrid() {
         const patternGrid = document.getElementById('pattern-grid');
         patternGrid.innerHTML = '';
-        
-        // Reset patterns to new length
-        this.patterns = this.emptyStepArrays();
-        this.dottedSteps = this.emptyStepArrays();
-        
-        // Update title
+
         const patternTitle = document.getElementById('pattern-title');
         patternTitle.textContent = `Pattern Sequencer (${this.stepsPerBar} steps) - Tap squares to create rhythm, long-press to dot a note`;
-        
+
         this.initializePatternGrid();
+    }
+
+    // Change of bar length: keep as much of the pattern as still fits rather
+    // than silently throwing away work.
+    regeneratePatternGrid() {
+        const dropped = this.resizeStepArrays();
+        this.rebuildPatternGrid();
+        this.refreshPatternDisplay();
+        return dropped;
+    }
+
+    // Fit patterns and dots to the current bar length, reporting how many set
+    // steps fell off the end.
+    resizeStepArrays() {
+        const patterns = this.emptyStepArrays();
+        const dotted = this.emptyStepArrays();
+        let dropped = 0;
+
+        INSTRUMENT_IDS.forEach(id => {
+            const oldPattern = this.patterns[id] || [];
+            const oldDotted = this.dottedSteps[id] || [];
+
+            oldPattern.forEach((isSet, i) => {
+                if (!isSet) return;
+                if (i < this.stepsPerBar) {
+                    patterns[id][i] = true;
+                    dotted[id][i] = Boolean(oldDotted[i]);
+                } else {
+                    dropped++;
+                }
+            });
+        });
+
+        this.patterns = patterns;
+        this.dottedSteps = dotted;
+        return dropped;
+    }
+
+    refreshPatternDisplay() {
+        INSTRUMENT_IDS.forEach(id => {
+            for (let i = 0; i < this.stepsPerBar; i++) this.updatePatternDisplay(id, i);
+        });
     }
 
     initializePatternGrid() {
         const patternGrid = document.getElementById('pattern-grid');
-        const instruments = ['nagado', 'odaiko', 'shime', 'click', 'chappa', 'kane'];
 
-        instruments.forEach(instrument => {
+        INSTRUMENTS.forEach(({ id: instrument, label: labelText }) => {
             const row = document.createElement('div');
             row.className = 'pattern-row';
-            
+
             const label = document.createElement('div');
             label.className = 'pattern-label';
-            label.textContent = instrument.charAt(0).toUpperCase() + instrument.slice(1);
-            
+            label.textContent = labelText;
+
             row.appendChild(label);
 
             const stepsContainer = document.createElement('div');
@@ -705,17 +784,8 @@ class TaikoMetronome {
             for (let i = 0; i < this.stepsPerBar; i++) {
                 const step = document.createElement('button');
                 step.className = 'pattern-step';
-                // Highlight beats based on time signature
-                if (this.timeSignature === '4/4') {
-                    // Every 4 steps (beat 1, 5, 9, 13)
-                    if (i % 4 === 0) step.classList.add('beat-1');
-                } else if (this.timeSignature === '3/4') {
-                    // Every 3 steps (beat 1, 4, 7, 10)
-                    if (i % 3 === 0) step.classList.add('beat-1');
-                } else if (this.timeSignature === '6/8') {
-                    // Only 1st and 7th steps (two groups of 6 eighth notes)
-                    if (i === 0 || i === 6) step.classList.add('beat-1');
-                }
+                // Accent the counted beats, wherever they fall in this signature.
+                if (i % this.stepsPerBeat === 0) step.classList.add('beat-1');
                 step.dataset.instrument = instrument;
                 step.dataset.step = i;
                 
@@ -806,7 +876,7 @@ class TaikoMetronome {
         this.dottedSteps[instrument][stepIndex] = isDotted;
         this.updatePatternDisplay(instrument, stepIndex);
 
-        const label = instrument.charAt(0).toUpperCase() + instrument.slice(1);
+        const label = INSTRUMENT_LABELS[instrument];
         if (!isDotted) {
             this.showNotification(`${label} step ${stepIndex + 1}: dot removed`);
             return;
@@ -845,41 +915,24 @@ class TaikoMetronome {
     }
 
     clearAllPatterns() {
-        Object.keys(this.patterns).forEach(instrument => {
-            this.patterns[instrument] = Array(this.stepsPerBar).fill(false);
-            this.dottedSteps[instrument] = Array(this.stepsPerBar).fill(false);
-            for (let i = 0; i < this.stepsPerBar; i++) {
-                this.updatePatternDisplay(instrument, i);
-            }
-        });
+        this.patterns = this.emptyStepArrays();
+        this.dottedSteps = this.emptyStepArrays();
+        this.refreshPatternDisplay();
         this.showNotification('All patterns cleared');
     }
 
     fillAllPatterns() {
-        Object.keys(this.patterns).forEach(instrument => {
-            this.patterns[instrument] = Array(this.stepsPerBar).fill(true);
-            this.dottedSteps[instrument] = Array(this.stepsPerBar).fill(false);
-            for (let i = 0; i < this.stepsPerBar; i++) {
-                this.updatePatternDisplay(instrument, i);
-            }
-        });
+        this.patterns = this.emptyStepArrays();
+        INSTRUMENT_IDS.forEach(id => this.patterns[id].fill(true));
+        this.dottedSteps = this.emptyStepArrays();
+        this.refreshPatternDisplay();
         this.showNotification('All patterns filled');
     }
 
     loadDefaultSounds() {
-        // Load sounds using both HTML5 Audio (for iOS media channel) and Web Audio API (for pitch control)
-        const defaultSounds = {
-            nagado: 'split_sounds/Nagado.wav',
-            odaiko: 'split_sounds/Odaiko.wav',
-            shime: 'split_sounds/Shime.wav',
-            click: 'split_sounds/Click.wav',
-            chappa: 'split_sounds/Chappa.wav',
-            kane: 'split_sounds/Kane.wav'
-        };
-
-        Object.keys(defaultSounds).forEach(instrument => {
-            const soundPath = defaultSounds[instrument];
-            
+        // Loaded twice over: HTML5 Audio for iOS media-channel routing, Web
+        // Audio as the fallback path.
+        INSTRUMENTS.forEach(({ id: instrument, file: soundPath }) => {
             // Create HTML5 Audio element for iOS media channel routing
             const audio = new Audio(soundPath);
             audio.preload = 'auto';

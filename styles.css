@@ -740,35 +740,24 @@ footer {
         width: 100%;
     }
 
-    .pattern-section {
-        overflow-x: auto;
-        overflow-y: hidden;
-    }
-
-    .pattern-grid {
-        min-width: fit-content;
-    }
-
-    /* Pattern grid - make squares bigger for touch */
-    .pattern-step {
-        width: 40px;
-        height: 40px;
-        min-width: 40px;
-        min-height: 40px;
-    }
-
+    /* The grid scrolls sideways rather than squeezing the squares. */
     .pattern-section {
         overflow-x: auto;
         overflow-y: hidden;
         -webkit-overflow-scrolling: touch;
     }
 
-    .pattern-grid {
+    .pattern-grid,
+    .pattern-row {
         min-width: fit-content;
     }
 
-    .pattern-row {
-        min-width: fit-content;
+    /* Bigger squares for touch */
+    .pattern-step {
+        width: 40px;
+        height: 40px;
+        min-width: 40px;
+        min-height: 40px;
     }
 
     .pattern-label {
