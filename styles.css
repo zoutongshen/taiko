@@ -301,6 +301,10 @@ h2 {
     cursor: pointer;
     transition: all 0.2s ease;
     position: relative;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+    touch-action: manipulation;
 }
 
 .pattern-step:hover {
@@ -322,6 +326,40 @@ h2 {
 .pattern-step.beat-1 {
     border-width: 3px;
     border-color: #cc0000;
+}
+
+/* Dotted note: the notation dot, sitting to the right of the note head. */
+.pattern-step.dotted::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    right: 6px;
+    width: 6px;
+    height: 6px;
+    margin-top: -3px;
+    border-radius: 50%;
+    background: #cc0000;
+    pointer-events: none;
+}
+
+/* On a filled square the dot needs darker ink to stay readable. */
+.pattern-step.dotted.active::after {
+    background: #7a0000;
+}
+
+/* A tail reaching into the gap, showing the note borrowing time
+   from the step that follows it. */
+.pattern-step.dotted::before {
+    content: '';
+    position: absolute;
+    top: 22%;
+    bottom: 22%;
+    right: -4px;
+    width: 3px;
+    border-radius: 2px;
+    background: #cc0000;
+    opacity: 0.55;
+    pointer-events: none;
 }
 
 @keyframes pulse {

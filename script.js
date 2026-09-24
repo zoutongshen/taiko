@@ -1,5 +1,10 @@
 // Taiko Metronome Application
 
+// A dotted step takes 3/4 of its pair; the step after it gets the rest.
+const DOTTED_SPLIT = 0.75;
+const LONG_PRESS_MS = 450;
+const LONG_PRESS_SLOP_PX = 10;
+
 class TaikoMetronome {
     constructor() {
         this.tempo = 120;
@@ -52,6 +57,14 @@ class TaikoMetronome {
         this.currentStep = 0;
         this.timeSignature = '4/4';
         this.stepsPerBar = 16;
+
+        // Dotted-note markers, parallel to patterns. A dot on a step makes that
+        // instrument's hit on the following step land late, so the pair splits
+        // 3:1 instead of evenly. The grid realigns straight after the pair.
+        this.dottedSteps = this.emptyStepArrays();
+
+        // Timeouts for hits a dot has pushed late, so stop() can cancel them.
+        this.pendingHits = [];
         
         // Pitch adjustments (in semitones, range -5 to +5)
         this.pitchOffsets = {
@@ -238,6 +251,7 @@ class TaikoMetronome {
         
         this.savedPatterns[name] = {
             patterns: JSON.parse(JSON.stringify(this.patterns)),
+            dotted: JSON.parse(JSON.stringify(this.dottedSteps)),
             timeSignature: this.timeSignature,
             stepsPerBar: this.stepsPerBar
         };
@@ -266,6 +280,7 @@ class TaikoMetronome {
             if (isOldFormat) {
                 // Old format: just load patterns
                 this.patterns = JSON.parse(JSON.stringify(savedData));
+                this.dottedSteps = this.emptyStepArrays();
             } else {
                 // New format: restore time signature and patterns
                 const savedTimeSignature = savedData.timeSignature || '4/4';
@@ -285,6 +300,8 @@ class TaikoMetronome {
                 }
                 
                 this.patterns = JSON.parse(JSON.stringify(savedData.patterns));
+                // Saves made before dotted notes existed simply have none.
+                this.dottedSteps = this.normalizeStepArrays(savedData.dotted);
             }
             
             // Update UI
@@ -333,6 +350,31 @@ class TaikoMetronome {
         });
     }
 
+    // A false-filled array per instrument, matching the current bar length.
+    emptyStepArrays(length = this.stepsPerBar) {
+        const arrays = {};
+        Object.keys(this.patterns).forEach(instrument => {
+            arrays[instrument] = Array(length).fill(false);
+        });
+        return arrays;
+    }
+
+    // Read saved step arrays into the current bar length, tolerating older
+    // saves that predate the field or used a different time signature.
+    normalizeStepArrays(saved) {
+        const arrays = this.emptyStepArrays();
+        if (!saved) return arrays;
+
+        Object.keys(arrays).forEach(instrument => {
+            const savedRow = saved[instrument];
+            if (!Array.isArray(savedRow)) return;
+            for (let i = 0; i < arrays[instrument].length; i++) {
+                arrays[instrument][i] = Boolean(savedRow[i]);
+            }
+        });
+        return arrays;
+    }
+
     updateInstrumentUI() {
         // No longer needed since we removed instrument checkboxes
     }
@@ -366,6 +408,9 @@ class TaikoMetronome {
             clearTimeout(this.intervalId);
             this.intervalId = null;
         }
+
+        this.pendingHits.forEach(id => clearTimeout(id));
+        this.pendingHits = [];
 
         this.currentStep = 0;
         this.removeStepHighlights();
@@ -412,30 +457,50 @@ class TaikoMetronome {
     }
 
     calculateBeatDuration() {
+        return this.stepDuration(this.currentStep);
+    }
+
+    stepDuration(stepIndex) {
         // 16 steps in a bar, 4 beats per bar = 4 steps per beat
         // So we need to divide the beat duration by 4
         const baseDuration = (60000 / this.tempo) / 4; // milliseconds per 16th note step
-        
-        console.log(`Beat calc - rhythmType: ${this.rhythmType}, currentStep: ${this.currentStep}`);
-        
+
         if (this.rhythmType === 'swing') {
             // Apply swing to pairs of 16th notes (every 2 steps)
             // Use a 3:2 ratio for more musical swing (60/40 split)
-            // Steps 0,2,4,6,8,10,12,14 are longer (downbeat of pair)
-            // Steps 1,3,5,7,9,11,13,15 are shorter (upbeat of pair)
-            const duration = (this.currentStep % 2 === 0) ? baseDuration * 1.2 : baseDuration * 0.8;
-            console.log(`SWING APPLIED: step ${this.currentStep}, duration ${duration.toFixed(1)}ms (base: ${baseDuration.toFixed(1)}ms)`);
-            return duration;
+            // Even steps are longer (downbeat of pair), odd steps shorter.
+            return (stepIndex % 2 === 0) ? baseDuration * 1.2 : baseDuration * 0.8;
         }
-        
-        console.log(`Regular timing: ${baseDuration.toFixed(1)}ms`);
+
         return baseDuration;
     }
 
+    // How late the hit after a dotted step should land. The dotted pair keeps
+    // its total length and splits 3:1, so the next step is back on the grid.
+    // Derived from the real step durations, so this stays correct under swing.
+    dottedDelay(dottedStepIndex) {
+        const current = this.stepDuration(dottedStepIndex);
+        const next = this.stepDuration((dottedStepIndex + 1) % this.stepsPerBar);
+        return Math.max(0, (current + next) * DOTTED_SPLIT - current);
+    }
+
     playInstruments() {
-        // Play instruments that have a beat set at current step
+        // A dot on the previous step pushes this instrument's hit late.
+        // Dots are per instrument, so the shared clock never moves - only the
+        // affected hit does, leaving every other part on the grid.
+        const previousStep = (this.currentStep - 1 + this.stepsPerBar) % this.stepsPerBar;
+        const delay = this.dottedDelay(previousStep);
+
         Object.keys(this.patterns).forEach(instrument => {
-            if (this.patterns[instrument][this.currentStep]) {
+            if (!this.patterns[instrument][this.currentStep]) return;
+
+            if (delay > 0 && this.dottedSteps[instrument][previousStep]) {
+                const timeoutId = setTimeout(() => {
+                    this.pendingHits = this.pendingHits.filter(id => id !== timeoutId);
+                    this.playSound(instrument);
+                }, delay);
+                this.pendingHits.push(timeoutId);
+            } else {
                 this.playSound(instrument);
             }
         });
@@ -610,13 +675,12 @@ class TaikoMetronome {
         patternGrid.innerHTML = '';
         
         // Reset patterns to new length
-        Object.keys(this.patterns).forEach(instrument => {
-            this.patterns[instrument] = Array(this.stepsPerBar).fill(false);
-        });
+        this.patterns = this.emptyStepArrays();
+        this.dottedSteps = this.emptyStepArrays();
         
         // Update title
         const patternTitle = document.getElementById('pattern-title');
-        patternTitle.textContent = `Pattern Sequencer (${this.stepsPerBar} steps) - Click squares to create rhythm`;
+        patternTitle.textContent = `Pattern Sequencer (${this.stepsPerBar} steps) - Tap squares to create rhythm, long-press to dot a note`;
         
         this.initializePatternGrid();
     }
@@ -655,9 +719,7 @@ class TaikoMetronome {
                 step.dataset.instrument = instrument;
                 step.dataset.step = i;
                 
-                step.addEventListener('click', (e) => {
-                    this.toggleStep(instrument, i);
-                });
+                this.attachStepHandlers(step, instrument, i);
 
                 stepsContainer.appendChild(step);
             }
@@ -667,8 +729,68 @@ class TaikoMetronome {
         });
     }
 
+    // Tap toggles the note; long-press (or right-click) toggles its dot.
+    attachStepHandlers(step, instrument, stepIndex) {
+        let pressTimer = null;
+        let longPressed = false;
+        let startX = 0;
+        let startY = 0;
+
+        const cancelPress = () => {
+            clearTimeout(pressTimer);
+            pressTimer = null;
+        };
+
+        step.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0) return; // leave right-click to contextmenu
+            longPressed = false;
+            startX = e.clientX;
+            startY = e.clientY;
+            pressTimer = setTimeout(() => {
+                longPressed = true;
+                this.toggleDotted(instrument, stepIndex);
+            }, LONG_PRESS_MS);
+        });
+
+        // Dragging means the grid is being scrolled, not held.
+        step.addEventListener('pointermove', (e) => {
+            if (!pressTimer) return;
+            const moved = Math.hypot(e.clientX - startX, e.clientY - startY);
+            if (moved > LONG_PRESS_SLOP_PX) cancelPress();
+        });
+
+        ['pointerup', 'pointerleave', 'pointercancel'].forEach(event => {
+            step.addEventListener(event, cancelPress);
+        });
+
+        step.addEventListener('click', (e) => {
+            // The long press already acted; swallow the tap that follows it.
+            if (longPressed) {
+                longPressed = false;
+                e.preventDefault();
+                return;
+            }
+            this.toggleStep(instrument, stepIndex);
+        });
+
+        step.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            cancelPress();
+            // Some touch browsers raise this *as well as* the long press.
+            if (longPressed) {
+                longPressed = false;
+                return;
+            }
+            this.toggleDotted(instrument, stepIndex);
+        });
+    }
+
     toggleStep(instrument, stepIndex) {
         this.patterns[instrument][stepIndex] = !this.patterns[instrument][stepIndex];
+        // A dot belongs to a note, so it goes when the note does.
+        if (!this.patterns[instrument][stepIndex]) {
+            this.dottedSteps[instrument][stepIndex] = false;
+        }
         this.updatePatternDisplay(instrument, stepIndex);
         // Play sound when activating a step
         if (this.patterns[instrument][stepIndex]) {
@@ -676,14 +798,35 @@ class TaikoMetronome {
         }
     }
 
+    toggleDotted(instrument, stepIndex) {
+        // Dotting an empty square fills it first - a dot needs a note to sit on.
+        this.patterns[instrument][stepIndex] = true;
+
+        const isDotted = !this.dottedSteps[instrument][stepIndex];
+        this.dottedSteps[instrument][stepIndex] = isDotted;
+        this.updatePatternDisplay(instrument, stepIndex);
+
+        const label = instrument.charAt(0).toUpperCase() + instrument.slice(1);
+        if (!isDotted) {
+            this.showNotification(`${label} step ${stepIndex + 1}: dot removed`);
+            return;
+        }
+
+        // The dot only moves the *next* hit, so say so when there is nothing to move.
+        const nextStep = (stepIndex + 1) % this.stepsPerBar;
+        const hasFollowingHit = this.patterns[instrument][nextStep];
+        this.showNotification(hasFollowingHit
+            ? `${label} step ${stepIndex + 1} dotted`
+            : `${label} step ${stepIndex + 1} dotted - add a hit on step ${nextStep + 1} to hear it`);
+
+        this.playSound(instrument);
+    }
+
     updatePatternDisplay(instrument, stepIndex) {
         const step = document.querySelector(`.pattern-step[data-instrument="${instrument}"][data-step="${stepIndex}"]`);
         if (step) {
-            if (this.patterns[instrument][stepIndex]) {
-                step.classList.add('active');
-            } else {
-                step.classList.remove('active');
-            }
+            step.classList.toggle('active', this.patterns[instrument][stepIndex]);
+            step.classList.toggle('dotted', this.dottedSteps[instrument][stepIndex]);
         }
     }
 
@@ -704,6 +847,7 @@ class TaikoMetronome {
     clearAllPatterns() {
         Object.keys(this.patterns).forEach(instrument => {
             this.patterns[instrument] = Array(this.stepsPerBar).fill(false);
+            this.dottedSteps[instrument] = Array(this.stepsPerBar).fill(false);
             for (let i = 0; i < this.stepsPerBar; i++) {
                 this.updatePatternDisplay(instrument, i);
             }
@@ -714,6 +858,7 @@ class TaikoMetronome {
     fillAllPatterns() {
         Object.keys(this.patterns).forEach(instrument => {
             this.patterns[instrument] = Array(this.stepsPerBar).fill(true);
+            this.dottedSteps[instrument] = Array(this.stepsPerBar).fill(false);
             for (let i = 0; i < this.stepsPerBar; i++) {
                 this.updatePatternDisplay(instrument, i);
             }
