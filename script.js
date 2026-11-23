@@ -30,12 +30,35 @@ const DEFAULT_TIME_SIGNATURE = '4/4';
 // A dotted step takes 3/4 of its pair; the step after it gets the rest.
 const DOTTED_SPLIT = 0.75;
 const LONG_PRESS_MS = 450;
+// A second tap on the same square inside this window is a double-tap.
+const DOUBLE_TAP_MS = 300;
+// How much louder an accented hit is than the track's normal level.
+const ACCENT_GAIN = 1.6;
 const LONG_PRESS_SLOP_PX = 10;
+
+// Swing is the share of a 16th-note pair given to its first note: 50 is
+// straight, 67 is a triplet feel.
+const SWING_RANGE = { min: 50, max: 75, default: 67 };   // percent
+
+const MAX_MEASURES = 16;
+
+// Tracks are added as needed rather than showing every drum up front. The same
+// sound can be added more than once - a high and a low nagado, say - since
+// each track has its own pitch and volume.
+const MAX_TRACKS = 8;
+const DEFAULT_TRACKS = ['nagado', 'shime'];
+
+// Playback runs on the audio clock. A short timer wakes up every tick and hands
+// Web Audio every hit due within the lookahead window, so main-thread hiccups
+// no longer move notes - they only have to be shorter than the window.
+const SCHEDULER_TICK_MS = 25;
+const LOOKAHEAD_S = 0.12;
+const START_DELAY_S = 0.05;
 
 // If the clock falls further behind than this - a backgrounded tab, usually -
 // drop the missed steps and pick up the grid again, rather than machine-gunning
 // through everything that was skipped.
-const RESYNC_THRESHOLD_MS = 250;
+const RESYNC_THRESHOLD_S = 0.25;
 
 const NOTIFICATION_MS = 2000;
 
@@ -49,43 +72,76 @@ const SOUND_PROFILES = {
     kane:   { frequency: 1500, duration: 0.25, type: 'triangle' }
 };
 
+// A second of silence as a WAV blob URL. Looping it through an <audio> element
+// puts iOS into its media ("playback") audio session, so Web Audio follows the
+// media volume instead of being muted by the ringer switch.
+function createSilentWavUrl(seconds = 1, sampleRate = 8000) {
+    const sampleCount = seconds * sampleRate;
+    const buffer = new ArrayBuffer(44 + sampleCount);
+    const view = new DataView(buffer);
+    const writeText = (offset, text) => {
+        for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+    };
+
+    writeText(0, 'RIFF');
+    view.setUint32(4, 36 + sampleCount, true);
+    writeText(8, 'WAVE');
+    writeText(12, 'fmt ');
+    view.setUint32(16, 16, true);          // fmt chunk size
+    view.setUint16(20, 1, true);           // PCM
+    view.setUint16(22, 1, true);           // mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate, true);  // byte rate (8-bit mono)
+    view.setUint16(32, 1, true);           // block align
+    view.setUint16(34, 8, true);           // bits per sample
+    writeText(36, 'data');
+    view.setUint32(40, sampleCount, true);
+    new Uint8Array(buffer, 44).fill(128);  // 8-bit silence is the midpoint
+
+    return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
+}
+
 class TaikoMetronome {
     constructor() {
         this.tempo = 120;
         this.isPlaying = false;
         this.isLooping = true;
         this.rhythmType = 'regular';
+        this.swingPercent = SWING_RANGE.default;
+        // With looping off, how many times to play the whole pattern.
         this.loopCount = 4;
-        this.currentBar = 0;
         this.currentStep = 0;
-        this.intervalId = null;
+        this.currentPass = 0;
         this.audioContext = null;
+        this.silentAudio = null;
 
         this.timeSignature = DEFAULT_TIME_SIGNATURE;
         this.stepsPerBar = TIME_SIGNATURES[DEFAULT_TIME_SIGNATURE].stepsPerBar;
         this.beatsPerBar = TIME_SIGNATURES[DEFAULT_TIME_SIGNATURE].beatsPerBar;
+        this.measureCount = 1;
 
-        // Samples are held twice over: HTML5 Audio routes to the iOS media
-        // channel, Web Audio is the fallback when an element has not loaded.
-        this.audioElements = this.perInstrument(null);
+        // Decoded samples, and which ones failed to load (those fall back to a
+        // synthesised tone; ones still loading simply stay quiet).
         this.audioBuffers = this.perInstrument(null);
+        this.sampleFailed = this.perInstrument(false);
 
-        this.patterns = this.emptyStepArrays();
+        // The tracks on the grid, in display order. Each owns its sound, pitch,
+        // volume, and three flat arrays spanning every measure: steps (hits),
+        // accents (louder hits) and dotted. A dot on a step makes that track's hit on the following step
+        // land late, so the pair splits 3:1 instead of evenly; the grid
+        // realigns straight after the pair.
+        this.nextTrackId = 1;
+        this.tracks = DEFAULT_TRACKS.map(instrument => this.createTrack(instrument));
 
-        // Dotted-note markers, parallel to patterns. A dot on a step makes that
-        // instrument's hit on the following step land late, so the pair splits
-        // 3:1 instead of evenly. The grid realigns straight after the pair.
-        this.dottedSteps = this.emptyStepArrays();
-
-        // Timeouts for hits a dot has pushed late, so stop() can cancel them.
-        this.pendingHits = [];
-
-        // When the current step falls due, kept in absolute time so a long
-        // practice session cannot accumulate drift.
+        // Scheduler state. nextStepAt is on the audio clock, in seconds.
+        this.schedulerId = null;
         this.nextStepAt = 0;
-
-        this.pitchOffsets = this.perInstrument(0);
-        this.volumeLevels = this.perInstrument(VOLUME_RANGE.default);
+        this.finishing = false;
+        // Hits already handed to Web Audio, so stop() can cancel ones not yet
+        // sounding, and timers that sync the grid display to the audio.
+        this.scheduledSources = new Set();
+        this.uiTimers = new Set();
+        this.lastMeasureShown = -1;
 
         // The status line underneath the transport, and the pending restore for
         // whatever notification is currently covering it.
@@ -105,6 +161,11 @@ class TaikoMetronome {
         return this.stepsPerBar / this.beatsPerBar;
     }
 
+    // Length of the whole pattern, across every measure.
+    get totalSteps() {
+        return this.stepsPerBar * this.measureCount;
+    }
+
     // A fresh { instrumentId: value } map.
     perInstrument(value) {
         const map = {};
@@ -112,31 +173,98 @@ class TaikoMetronome {
         return map;
     }
 
-    initializeAudio() {
-        // Create and unlock AudioContext on first user interaction
-        const unlockAudio = async () => {
-            if (!this.audioContext) {
-                this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            }
-            
-            // Resume context if suspended (required for iOS/mobile)
-            if (this.audioContext.state === 'suspended') {
-                await this.audioContext.resume();
-            }
-            
-            // Play silent buffer to unlock audio on iOS
-            const buffer = this.audioContext.createBuffer(1, 1, 22050);
-            const source = this.audioContext.createBufferSource();
-            source.buffer = buffer;
-            source.connect(this.audioContext.destination);
-            source.start(0);
-            
-            console.log('Audio unlocked, state:', this.audioContext.state);
+    // A new, empty track the length of the current pattern.
+    createTrack(instrument, { pitch = 0, volume = VOLUME_RANGE.default, steps, dotted, accents } = {}) {
+        return {
+            id: this.nextTrackId++,
+            instrument,
+            pitch,
+            volume,
+            steps: this.fitSteps(steps),
+            dotted: this.fitSteps(dotted),
+            accents: this.fitSteps(accents)
         };
-        
-        // Try to unlock on various touch events
+    }
+
+    // Copy saved step values into an array of the current pattern length,
+    // padding or trimming as needed.
+    fitSteps(saved) {
+        const steps = Array(this.totalSteps).fill(false);
+        if (!Array.isArray(saved)) return steps;
+        for (let i = 0; i < steps.length; i++) steps[i] = Boolean(saved[i]);
+        return steps;
+    }
+
+    findTrack(trackId) {
+        return this.tracks.find(track => track.id === trackId);
+    }
+
+    // "Nagado", or "Nagado 2" when the same sound is on more than one track.
+    trackLabel(track) {
+        const same = this.tracks.filter(t => t.instrument === track.instrument);
+        const name = INSTRUMENT_LABELS[track.instrument];
+        return same.length > 1 ? `${name} ${same.indexOf(track) + 1}` : name;
+    }
+
+    ensureAudioContext() {
+        if (!this.audioContext) {
+            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+            // Everything plays through a limiter, so accents on loud tracks
+            // get louder without clipping. Set to leave normal levels alone.
+            const limiter = this.audioContext.createDynamicsCompressor();
+            limiter.threshold.value = -3;
+            limiter.knee.value = 0;
+            limiter.ratio.value = 20;
+            limiter.attack.value = 0.002;
+            limiter.release.value = 0.1;
+            limiter.connect(this.audioContext.destination);
+            this.output = limiter;
+        }
+        return this.audioContext;
+    }
+
+    // Send Web Audio to the media channel on iOS rather than the ringer, so the
+    // silent switch does not mute it. Must run inside a user gesture.
+    routeToMediaChannel() {
+        // Safari 17+ lets the page simply say so.
+        if (navigator.audioSession) {
+            try {
+                navigator.audioSession.type = 'playback';
+                return;
+            } catch (err) {
+                // Fall through to the older trick.
+            }
+        }
+
+        // Older iOS: any playing media element switches the session over.
+        if (!this.silentAudio) {
+            this.silentAudio = new Audio(createSilentWavUrl());
+            this.silentAudio.loop = true;
+            this.silentAudio.setAttribute('playsinline', '');
+        }
+        if (this.silentAudio.paused) {
+            this.silentAudio.play().catch(err => console.warn('Silent keep-alive failed:', err));
+        }
+    }
+
+    initializeAudio() {
+        // Unlock audio on the first user interaction (required on iOS/mobile).
+        const unlockAudio = () => {
+            const ctx = this.ensureAudioContext();
+            this.routeToMediaChannel();
+
+            if (ctx.state === 'suspended') ctx.resume();
+
+            // Play a silent buffer to finish unlocking on iOS.
+            const source = ctx.createBufferSource();
+            source.buffer = ctx.createBuffer(1, 1, 22050);
+            source.connect(ctx.destination);
+            source.start(0);
+        };
+
         ['touchstart', 'touchend', 'click'].forEach(event => {
-            document.addEventListener(event, unlockAudio, { once: true });
+            document.addEventListener(event, unlockAudio, { once: true, capture: true });
         });
     }
 
@@ -145,39 +273,54 @@ class TaikoMetronome {
         const tempoSlider = document.getElementById('tempo-slider');
         const tempoInput = document.getElementById('tempo-input');
         
+        // The scheduler reads this.tempo for every step, so a change takes
+        // effect on the next note without restarting playback.
+        const setTempo = (value) => {
+            const tempo = parseInt(value, 10);
+            const min = parseInt(tempoSlider.min, 10);
+            const max = parseInt(tempoSlider.max, 10);
+            if (Number.isNaN(tempo) || tempo < min || tempo > max) return false;
+            this.tempo = tempo;
+            return true;
+        };
+
         tempoSlider.addEventListener('input', (e) => {
-            this.tempo = parseInt(e.target.value);
-            tempoInput.value = this.tempo;
-            if (this.isPlaying) {
-                this.stop();
-                this.play();
-            }
+            if (setTempo(e.target.value)) tempoInput.value = this.tempo;
         });
 
         tempoInput.addEventListener('input', (e) => {
-            this.tempo = parseInt(e.target.value);
-            tempoSlider.value = this.tempo;
-            if (this.isPlaying) {
-                this.stop();
-                this.play();
-            }
+            if (setTempo(e.target.value)) tempoSlider.value = this.tempo;
         });
 
         // Rhythm controls
+        const swingContainer = document.getElementById('swing-amount-container');
+        const swingSlider = document.getElementById('swing-slider');
+        const swingValue = document.getElementById('swing-value');
+
         const rhythmRadios = document.querySelectorAll('input[name="rhythm"]');
         rhythmRadios.forEach(radio => {
             radio.addEventListener('change', (e) => {
                 this.rhythmType = e.target.value;
-                console.log('Rhythm type changed to:', this.rhythmType);
+                swingContainer.style.display = this.rhythmType === 'swing' ? 'flex' : 'none';
                 this.showNotification(`Rhythm: ${this.rhythmType}`);
             });
+        });
+
+        swingSlider.min = SWING_RANGE.min;
+        swingSlider.max = SWING_RANGE.max;
+        swingSlider.value = this.swingPercent;
+        swingValue.textContent = `${this.swingPercent}%`;
+        swingSlider.addEventListener('input', (e) => {
+            this.swingPercent = parseInt(e.target.value, 10);
+            swingValue.textContent = `${this.swingPercent}%`;
         });
 
         // Time signature selector
         const timeSigSelect = document.getElementById('time-sig');
         timeSigSelect.addEventListener('change', (e) => {
+            const oldStepsPerBar = this.stepsPerBar;
             this.applyTimeSignature(e.target.value);
-            const dropped = this.regeneratePatternGrid();
+            const dropped = this.regeneratePatternGrid(oldStepsPerBar);
             this.showNotification(dropped
                 ? `Time signature: ${this.timeSignature} - ${dropped} hit${dropped === 1 ? '' : 's'} past the new bar end were dropped`
                 : `Time signature: ${this.timeSignature}`);
@@ -212,16 +355,18 @@ class TaikoMetronome {
         });
 
         loopCountInput.addEventListener('input', (e) => {
-            this.loopCount = parseInt(e.target.value);
+            const count = parseInt(e.target.value, 10);
+            if (count >= 1) this.loopCount = count;
         });
 
         // Playback controls
         document.getElementById('play-btn').addEventListener('click', () => this.play());
         document.getElementById('stop-btn').addEventListener('click', () => this.stop());
+        document.getElementById('stop-btn').disabled = true;
 
         // Initialize pattern grid
-        this.initializePatternGrid();
-        
+        this.rebuildPatternGrid();
+
         // Initialize button states
         document.getElementById('load-pattern-btn').disabled = true;
         document.getElementById('delete-pattern-btn').disabled = true;
@@ -229,39 +374,100 @@ class TaikoMetronome {
         // Pattern control buttons
         document.getElementById('clear-pattern-btn').addEventListener('click', () => this.clearAllPatterns());
         document.getElementById('fill-pattern-btn').addEventListener('click', () => this.fillAllPatterns());
-        
-        this.initializePitchControls();
-        document.getElementById('reset-all-pitch-btn').addEventListener('click', () => this.resetAllPitch());
-        document.getElementById('reset-all-volume-btn').addEventListener('click', () => this.resetAllVolume());
+        document.getElementById('add-measure-btn').addEventListener('click', () => this.addMeasure());
+
+        // "+ Add instrument" is a select so phones get their native picker.
+        const addTrackSelect = document.getElementById('add-track-select');
+        INSTRUMENTS.forEach(({ id, label }) => {
+            const option = document.createElement('option');
+            option.value = id;
+            option.textContent = label;
+            addTrackSelect.appendChild(option);
+        });
+        addTrackSelect.addEventListener('change', (e) => {
+            if (e.target.value) this.addTrack(e.target.value);
+            e.target.value = '';
+        });
+
+        this.renderTrackList();
     }
 
-    initializePitchControls() {
-        const container = document.getElementById('pitch-controls');
+    // The track list above the grid: each track's name, pitch, volume and a
+    // remove button. The grid itself only shows the notes.
+    renderTrackList() {
+        const container = document.getElementById('track-list');
         container.innerHTML = '';
 
-        INSTRUMENTS.forEach(({ id, label }) => {
+        this.tracks.forEach(track => {
             const row = document.createElement('div');
-            row.className = 'pitch-row';
+            row.className = 'track-row';
 
             const name = document.createElement('span');
             name.className = 'instrument-label';
-            name.textContent = `${label}:`;
+            name.textContent = this.trackLabel(track);
             row.appendChild(name);
 
-            row.appendChild(this.buildAdjuster('Pitch', `pitch-${id}`, 'pitch-value',
-                direction => this.adjustPitch(id, direction)));
-            row.appendChild(this.buildAdjuster('Volume', `volume-${id}`, 'volume-value',
-                direction => this.adjustVolume(id, direction)));
+            const pitch = this.buildAdjuster('Pitch', 'pitch-value',
+                direction => this.adjustPitch(track, direction, pitch.valueEl));
+            this.showPitch(track, pitch.valueEl);
+            row.appendChild(pitch.group);
+
+            const volume = this.buildAdjuster('Volume', 'volume-value',
+                direction => this.adjustVolume(track, direction, volume.valueEl));
+            this.showVolume(track, volume.valueEl);
+            row.appendChild(volume.group);
+
+            const remove = document.createElement('button');
+            remove.className = 'track-remove-btn';
+            remove.textContent = '✕';
+            remove.title = `Remove ${this.trackLabel(track)}`;
+            remove.setAttribute('aria-label', remove.title);
+            remove.addEventListener('click', () => this.removeTrack(track.id));
+            row.appendChild(remove);
 
             container.appendChild(row);
         });
 
-        this.updatePitchDisplay();
-        this.updateVolumeDisplay();
+        const full = this.tracks.length >= MAX_TRACKS;
+        const addTrackSelect = document.getElementById('add-track-select');
+        addTrackSelect.disabled = full;
+        addTrackSelect.options[0].textContent = full
+            ? `${MAX_TRACKS} instruments max`
+            : '+ Add instrument';
+    }
+
+    addTrack(instrument) {
+        if (this.tracks.length >= MAX_TRACKS) {
+            this.showNotification(`At most ${MAX_TRACKS} instruments`, true);
+            return;
+        }
+        const track = this.createTrack(instrument);
+        this.tracks.push(track);
+        this.afterTracksChanged();
+        this.playSound(track);
+        this.showNotification(`${this.trackLabel(track)} added`);
+    }
+
+    removeTrack(trackId) {
+        const track = this.findTrack(trackId);
+        if (!track) return;
+        const label = this.trackLabel(track);
+        if (track.steps.some(Boolean) && !confirm(`Remove ${label} and its notes?`)) return;
+
+        this.tracks = this.tracks.filter(t => t.id !== trackId);
+        this.afterTracksChanged();
+        this.showNotification(`${label} removed`);
+    }
+
+    // Labels can change ("Nagado" becomes "Nagado 1"), so redraw both views.
+    afterTracksChanged() {
+        this.renderTrackList();
+        this.rebuildPatternGrid();
+        this.refreshPatternDisplay();
     }
 
     // A [- value +] cluster wired straight to its handler.
-    buildAdjuster(labelText, valueId, valueClass, onAdjust) {
+    buildAdjuster(labelText, valueClass, onAdjust) {
         const group = document.createElement('span');
         group.className = 'control-group';
 
@@ -280,7 +486,6 @@ class TaikoMetronome {
 
         const value = document.createElement('span');
         value.className = valueClass;
-        value.id = valueId;
         group.appendChild(value);
 
         const up = document.createElement('button');
@@ -289,20 +494,15 @@ class TaikoMetronome {
         up.addEventListener('click', () => onAdjust('up'));
         group.appendChild(up);
 
-        return group;
+        return { group, valueEl: value };
     }
 
-    updatePitchDisplay() {
-        INSTRUMENT_IDS.forEach(id => {
-            const offset = this.pitchOffsets[id];
-            document.getElementById(`pitch-${id}`).textContent = offset > 0 ? `+${offset}` : `${offset}`;
-        });
+    showPitch(track, valueEl) {
+        valueEl.textContent = track.pitch > 0 ? `+${track.pitch}` : `${track.pitch}`;
     }
 
-    updateVolumeDisplay() {
-        INSTRUMENT_IDS.forEach(id => {
-            document.getElementById(`volume-${id}`).textContent = `${this.volumeLevels[id]}%`;
-        });
+    showVolume(track, valueEl) {
+        valueEl.textContent = `${track.volume}%`;
     }
 
     savePattern() {
@@ -315,10 +515,11 @@ class TaikoMetronome {
         }
         
         this.savedPatterns[name] = {
-            patterns: JSON.parse(JSON.stringify(this.patterns)),
-            dotted: JSON.parse(JSON.stringify(this.dottedSteps)),
+            tracks: this.tracks.map(({ instrument, pitch, volume, steps, dotted, accents }) =>
+                ({ instrument, pitch, volume, steps: [...steps], dotted: [...dotted], accents: [...accents] })),
             timeSignature: this.timeSignature,
-            stepsPerBar: this.stepsPerBar
+            stepsPerBar: this.stepsPerBar,
+            measureCount: this.measureCount
         };
         localStorage.setItem('taikoPatterns', JSON.stringify(this.savedPatterns));
         
@@ -343,19 +544,34 @@ class TaikoMetronome {
         const isOldFormat = Array.isArray(savedData.nagado);
 
         if (isOldFormat) {
-            this.patterns = this.normalizeStepArrays(savedData);
-            this.dottedSteps = this.emptyStepArrays();
+            this.measureCount = 1;
+            this.tracks = this.tracksFromInstrumentMaps(savedData, null);
         } else {
             this.applyTimeSignature(savedData.timeSignature || DEFAULT_TIME_SIGNATURE);
             document.getElementById('time-sig').value = this.timeSignature;
 
-            this.patterns = this.normalizeStepArrays(savedData.patterns);
-            // Saves made before dotted notes existed simply have none.
-            this.dottedSteps = this.normalizeStepArrays(savedData.dotted);
-            this.rebuildPatternGrid();
+            // Saves made before measures existed are a single bar.
+            const savedMeasures = parseInt(savedData.measureCount, 10);
+            this.measureCount = Math.min(MAX_MEASURES, Math.max(1, savedMeasures || 1));
+
+            this.tracks = Array.isArray(savedData.tracks)
+                ? savedData.tracks
+                    .filter(saved => INSTRUMENT_LABELS[saved.instrument])
+                    .slice(0, MAX_TRACKS)
+                    .map(saved => this.createTrack(saved.instrument, {
+                        pitch: this.clamp(saved.pitch, PITCH_RANGE, 0),
+                        volume: this.clamp(saved.volume, VOLUME_RANGE, VOLUME_RANGE.default),
+                        steps: saved.steps,
+                        dotted: saved.dotted,
+                        // Saves from before accents existed simply have none.
+                        accents: saved.accents
+                    }))
+                // Saves from before tracks were keyed by instrument.
+                : this.tracksFromInstrumentMaps(savedData.patterns, savedData.dotted);
         }
 
-        this.refreshPatternDisplay();
+        if (this.currentStep >= this.totalSteps) this.currentStep = 0;
+        this.afterTracksChanged();
 
         const timeSigInfo = isOldFormat ? '' : ` (${this.timeSignature})`;
         this.showNotification(`Pattern "${name}" loaded${timeSigInfo}!`);
@@ -395,61 +611,70 @@ class TaikoMetronome {
         });
     }
 
-    // A false-filled array per instrument, matching the current bar length.
-    emptyStepArrays(length = this.stepsPerBar) {
-        const arrays = {};
-        INSTRUMENT_IDS.forEach(id => { arrays[id] = Array(length).fill(false); });
-        return arrays;
+    // Older saves held one { instrumentId: steps } map for hits and one for
+    // dots. Bring back only the instruments that were actually used, falling
+    // back to the default tracks if none were.
+    tracksFromInstrumentMaps(patterns, dotted) {
+        const used = INSTRUMENT_IDS.filter(id =>
+            Array.isArray(patterns?.[id]) && patterns[id].some(Boolean));
+        const instruments = used.length ? used : DEFAULT_TRACKS;
+        return instruments.map(id => this.createTrack(id, {
+            steps: patterns?.[id],
+            dotted: dotted?.[id]
+        }));
     }
 
-    // Read saved step arrays into the current bar length, tolerating older
-    // saves that predate the field or used a different time signature.
-    normalizeStepArrays(saved) {
-        const arrays = this.emptyStepArrays();
-        if (!saved) return arrays;
-
-        Object.keys(arrays).forEach(instrument => {
-            const savedRow = saved[instrument];
-            if (!Array.isArray(savedRow)) return;
-            for (let i = 0; i < arrays[instrument].length; i++) {
-                arrays[instrument][i] = Boolean(savedRow[i]);
-            }
-        });
-        return arrays;
+    // A saved number, kept inside its range, or the fallback if unusable.
+    clamp(value, range, fallback) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return fallback;
+        return Math.min(range.max, Math.max(range.min, number));
     }
 
     async play() {
-        if (!this.audioContext) {
-            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        }
+        if (this.isPlaying) return;
 
-        // Resume AudioContext if suspended (critical for iOS/mobile)
-        if (this.audioContext.state === 'suspended') {
-            await this.audioContext.resume();
-        }
+        const ctx = this.ensureAudioContext();
+        // Both of these need the user gesture, so they come before any await.
+        this.routeToMediaChannel();
+        const resumed = ctx.state === 'suspended' ? ctx.resume() : null;
 
         this.isPlaying = true;
-        this.currentBar = 0;
+        this.finishing = false;
         this.currentStep = 0;
-        this.nextStepAt = performance.now();
+        this.currentPass = 0;
+        this.lastMeasureShown = -1;
 
         document.getElementById('play-btn').disabled = true;
         document.getElementById('stop-btn').disabled = false;
         this.setStatus('Playing...');
 
-        this.scheduleBeat();
+        if (resumed) await resumed;
+        if (!this.isPlaying) return; // stopped while resuming
+
+        this.nextStepAt = ctx.currentTime + START_DELAY_S;
+        this.schedulerTick();
+        this.schedulerId = setInterval(() => this.schedulerTick(), SCHEDULER_TICK_MS);
     }
 
     stop() {
         this.isPlaying = false;
-        
-        if (this.intervalId) {
-            clearTimeout(this.intervalId);
-            this.intervalId = null;
-        }
+        this.finishing = false;
 
-        this.pendingHits.forEach(id => clearTimeout(id));
-        this.pendingHits = [];
+        clearInterval(this.schedulerId);
+        this.schedulerId = null;
+
+        this.uiTimers.forEach(id => clearTimeout(id));
+        this.uiTimers.clear();
+
+        // Cancel hits queued for the future; ones already sounding ring out.
+        const now = this.audioContext ? this.audioContext.currentTime : 0;
+        this.scheduledSources.forEach(entry => {
+            if (entry.startAt > now) {
+                try { entry.source.stop(); } catch (err) { /* already stopped */ }
+                this.scheduledSources.delete(entry);
+            }
+        });
 
         this.currentStep = 0;
         this.removeStepHighlights();
@@ -460,56 +685,75 @@ class TaikoMetronome {
         document.getElementById('beat-indicator').textContent = '';
     }
 
-    scheduleBeat() {
-        if (!this.isPlaying) return;
+    // Hand Web Audio every step that falls due inside the lookahead window.
+    schedulerTick() {
+        if (!this.isPlaying || this.finishing) return;
 
-        // Check if we should stop (non-looping mode)
-        if (!this.isLooping && this.currentBar >= this.loopCount) {
-            this.stop();
-            return;
-        }
-
-        this.playInstruments();
-        this.updateBeatIndicator();
-
-        const duration = this.stepDuration(this.currentStep);
-
-        // The bar is just the step counter wrapping; deriving it keeps the two
-        // from disagreeing, and makes the bar limit count real bars.
-        this.currentStep++;
-        if (this.currentStep >= this.stepsPerBar) {
-            this.currentStep = 0;
-            this.currentBar++;
-        }
-
-        // Aim at an absolute time rather than sleeping a fixed span, so a step
-        // that fires late steals from its own delay instead of pushing back
-        // everything after it. Sleeping fixed spans compounds the error.
-        this.nextStepAt += duration;
-        const now = performance.now();
-        if (now - this.nextStepAt > RESYNC_THRESHOLD_MS) {
+        const now = this.audioContext.currentTime;
+        if (now - this.nextStepAt > RESYNC_THRESHOLD_S) {
             // Too far behind to catch up musically (a backgrounded tab);
             // drop the missed steps instead of firing them all at once.
-            this.nextStepAt = now;
+            this.nextStepAt = now + START_DELAY_S;
         }
 
-        this.intervalId = setTimeout(() => this.scheduleBeat(), Math.max(0, this.nextStepAt - now));
+        while (this.nextStepAt < now + LOOKAHEAD_S) {
+            if (!this.isLooping && this.currentPass >= this.loopCount) {
+                // Done: stop once the last step has had its full length.
+                this.finishing = true;
+                this.runAtAudioTime(this.nextStepAt, () => this.stop());
+                return;
+            }
+
+            const step = this.currentStep;
+            this.scheduleStep(step, this.nextStepAt);
+
+            // Absolute times on the audio clock: nothing accumulates drift.
+            this.nextStepAt += this.stepDuration(step) / 1000;
+            this.currentStep++;
+            if (this.currentStep >= this.totalSteps) {
+                this.currentStep = 0;
+                this.currentPass++;
+            }
+        }
     }
 
-    calculateBeatDuration() {
-        return this.stepDuration(this.currentStep);
+    // Queue one step's hits at an exact audio time, and the grid update with it.
+    scheduleStep(step, when) {
+        // A dot on the previous step pushes this track's hit late. Dots are
+        // per track, so the shared clock never moves - only the affected hit
+        // does, leaving every other part on the grid.
+        const previousStep = (step - 1 + this.totalSteps) % this.totalSteps;
+        const dottedOffset = this.dottedDelay(previousStep) / 1000;
+
+        this.tracks.forEach(track => {
+            if (!track.steps[step]) return;
+            const isPushed = dottedOffset > 0 && track.dotted[previousStep];
+            this.playSound(track, isPushed ? when + dottedOffset : when, track.accents[step]);
+        });
+
+        this.runAtAudioTime(when, () => this.showPlayhead(step));
+    }
+
+    // Run a callback when the audio clock reaches the given time.
+    runAtAudioTime(when, callback) {
+        const delayMs = Math.max(0, (when - this.audioContext.currentTime) * 1000);
+        const timerId = setTimeout(() => {
+            this.uiTimers.delete(timerId);
+            callback();
+        }, delayMs);
+        this.uiTimers.add(timerId);
     }
 
     stepDuration(stepIndex) {
-        // 16 steps in a bar, 4 beats per bar = 4 steps per beat
-        // So we need to divide the beat duration by 4
-        const baseDuration = (60000 / this.tempo) / 4; // milliseconds per 16th note step
+        // A step is a 16th note: a quarter of a beat at the current tempo.
+        const baseDuration = (60000 / this.tempo) / 4;
 
         if (this.rhythmType === 'swing') {
-            // Apply swing to pairs of 16th notes (every 2 steps)
-            // Use a 3:2 ratio for more musical swing (60/40 split)
-            // Even steps are longer (downbeat of pair), odd steps shorter.
-            return (stepIndex % 2 === 0) ? baseDuration * 1.2 : baseDuration * 0.8;
+            // Swing each pair of 16ths: the first takes swingPercent of the
+            // pair, the second the rest. Pairs always add up to two steps, so
+            // every beat still lands on the grid.
+            const ratio = this.swingPercent / 100;
+            return 2 * baseDuration * (stepIndex % 2 === 0 ? ratio : 1 - ratio);
         }
 
         return baseDuration;
@@ -520,147 +764,110 @@ class TaikoMetronome {
     // Derived from the real step durations, so this stays correct under swing.
     dottedDelay(dottedStepIndex) {
         const current = this.stepDuration(dottedStepIndex);
-        const next = this.stepDuration((dottedStepIndex + 1) % this.stepsPerBar);
+        const next = this.stepDuration((dottedStepIndex + 1) % this.totalSteps);
         return Math.max(0, (current + next) * DOTTED_SPLIT - current);
     }
 
-    playInstruments() {
-        // A dot on the previous step pushes this instrument's hit late.
-        // Dots are per instrument, so the shared clock never moves - only the
-        // affected hit does, leaving every other part on the grid.
-        const previousStep = (this.currentStep - 1 + this.stepsPerBar) % this.stepsPerBar;
-        const delay = this.dottedDelay(previousStep);
+    // Play a track's sound now, or at an exact time on the audio clock.
+    playSound(track, when = 0, accented = false) {
+        const ctx = this.ensureAudioContext();
+        if (ctx.state === 'suspended') ctx.resume();
 
-        Object.keys(this.patterns).forEach(instrument => {
-            if (!this.patterns[instrument][this.currentStep]) return;
+        const instrument = track.instrument;
+        const buffer = this.audioBuffers[instrument];
+        // Still loading: stay quiet rather than play a stand-in beep.
+        if (!buffer && !this.sampleFailed[instrument]) return;
 
-            if (delay > 0 && this.dottedSteps[instrument][previousStep]) {
-                const untilOnset = Math.max(0, this.nextStepAt + delay - performance.now());
-                const timeoutId = setTimeout(() => {
-                    this.pendingHits = this.pendingHits.filter(id => id !== timeoutId);
-                    this.playSound(instrument);
-                }, untilOnset);
-                this.pendingHits.push(timeoutId);
-            } else {
-                this.playSound(instrument);
-            }
-        });
-        this.highlightCurrentStep(this.currentStep);
-    }
+        const startAt = Math.max(when, ctx.currentTime);
+        const volumeLevel = (track.volume / 100) * (accented ? ACCENT_GAIN : 1);
+        const gainNode = ctx.createGain();
+        gainNode.connect(this.output);
 
-    async playSound(instrument) {
-        const pitchOffset = this.pitchOffsets[instrument] || 0;
-        const volumeLevel = (this.volumeLevels[instrument] || 100) / 100;
-        
-        // Always use HTML5 Audio for iOS media channel routing
-        if (this.audioElements[instrument]) {
-            const audio = this.audioElements[instrument];
-            
-            // Clone the audio element to allow overlapping plays
-            const clone = audio.cloneNode();
-            clone.volume = 0.7 * volumeLevel;
-            
-            // Apply pitch shift via playbackRate (limited but works in media channel)
-            if (pitchOffset !== 0) {
-                // HTML5 Audio playbackRate for pitch (not as good as Web Audio but routes correctly)
-                clone.playbackRate = Math.pow(2, pitchOffset / 12);
-            }
-            
-            // Play and remove when done
-            clone.play().catch(err => console.warn('Audio play failed:', err));
-            clone.addEventListener('ended', () => clone.remove());
-            
-            return;
-        }
-        
-        // Fallback to Web Audio API if HTML5 Audio not loaded
-        if (!this.audioContext) {
-            console.warn('No audio available');
-            return;
-        }
-        
-        // Ensure AudioContext is running
-        if (this.audioContext.state === 'suspended') {
-            await this.audioContext.resume();
-        }
-
-        // Use Web Audio buffer as fallback
-        if (this.audioBuffers[instrument]) {
-            const source = this.audioContext.createBufferSource();
-            source.buffer = this.audioBuffers[instrument];
-            
-            // Apply pitch shifting
-            if (pitchOffset !== 0) {
-                // Calculate playback rate: 2^(semitones/12)
-                source.playbackRate.value = Math.pow(2, pitchOffset / 12);
-            }
-            
-            // Apply volume adjustment
-            const gainNode = this.audioContext.createGain();
+        let source;
+        if (buffer) {
+            source = ctx.createBufferSource();
+            source.buffer = buffer;
+            // Pitch shift by playback rate: 2^(semitones/12).
+            if (track.pitch !== 0) source.playbackRate.value = Math.pow(2, track.pitch / 12);
             gainNode.gain.value = 0.7 * volumeLevel;
-            
             source.connect(gainNode);
-            gainNode.connect(this.audioContext.destination);
-            
-            source.start(this.audioContext.currentTime);
+            source.start(startAt);
         } else {
-            // Use synthesized sound as fallback
-            const oscillator = this.audioContext.createOscillator();
-            const gainNode = this.audioContext.createGain();
-            
-            oscillator.connect(gainNode);
-            gainNode.connect(this.audioContext.destination);
-
+            // Synthesised stand-in for a sample that failed to load.
             const profile = SOUND_PROFILES[instrument];
-            oscillator.type = profile.type;
-            oscillator.frequency.setValueAtTime(profile.frequency, this.audioContext.currentTime);
-            
-            // Envelope
-            gainNode.gain.setValueAtTime(0.3, this.audioContext.currentTime);
-            gainNode.gain.exponentialRampToValueAtTime(0.01, this.audioContext.currentTime + profile.duration);
-
-            oscillator.start(this.audioContext.currentTime);
-            oscillator.stop(this.audioContext.currentTime + profile.duration);
+            source = ctx.createOscillator();
+            source.type = profile.type;
+            source.frequency.setValueAtTime(profile.frequency, startAt);
+            gainNode.gain.setValueAtTime(0.3 * volumeLevel || 0.0001, startAt);
+            gainNode.gain.exponentialRampToValueAtTime(0.0001, startAt + profile.duration);
+            source.connect(gainNode);
+            source.start(startAt);
+            source.stop(startAt + profile.duration);
         }
+
+        const entry = { source, startAt };
+        this.scheduledSources.add(entry);
+        source.onended = () => {
+            this.scheduledSources.delete(entry);
+            gainNode.disconnect();
+        };
     }
 
-    adjustPitch(instrument, direction) {
+    // Pitch and volume changes play the sound when stopped, so the result can
+    // be heard straight away; while playing, the next hit already does that.
+    adjustPitch(track, direction, valueEl) {
         const change = direction === 'up' ? PITCH_RANGE.step : -PITCH_RANGE.step;
-        const newPitch = this.pitchOffsets[instrument] + change;
+        const newPitch = track.pitch + change;
         if (newPitch < PITCH_RANGE.min || newPitch > PITCH_RANGE.max) return;
 
-        this.pitchOffsets[instrument] = newPitch;
-        this.updatePitchDisplay();
-        this.showNotification(`${INSTRUMENT_LABELS[instrument]}: ${newPitch > 0 ? '+' : ''}${newPitch} semitones`);
+        track.pitch = newPitch;
+        this.showPitch(track, valueEl);
+        if (!this.isPlaying) this.playSound(track);
+        this.showNotification(`${this.trackLabel(track)}: ${newPitch > 0 ? '+' : ''}${newPitch} semitones`);
     }
 
-    resetAllPitch() {
-        this.pitchOffsets = this.perInstrument(0);
-        this.updatePitchDisplay();
-        this.showNotification('All pitch adjustments reset to 0');
-    }
-
-    adjustVolume(instrument, direction) {
+    adjustVolume(track, direction, valueEl) {
         const change = direction === 'up' ? VOLUME_RANGE.step : -VOLUME_RANGE.step;
-        const newVolume = this.volumeLevels[instrument] + change;
+        const newVolume = track.volume + change;
         if (newVolume < VOLUME_RANGE.min || newVolume > VOLUME_RANGE.max) return;
 
-        this.volumeLevels[instrument] = newVolume;
-        this.updateVolumeDisplay();
-        this.showNotification(`${INSTRUMENT_LABELS[instrument]}: ${newVolume}% volume`);
+        track.volume = newVolume;
+        this.showVolume(track, valueEl);
+        if (!this.isPlaying) this.playSound(track);
+        this.showNotification(`${this.trackLabel(track)}: ${newVolume}% volume`);
     }
 
-    resetAllVolume() {
-        this.volumeLevels = this.perInstrument(VOLUME_RANGE.default);
-        this.updateVolumeDisplay();
-        this.showNotification(`All volume levels reset to ${VOLUME_RANGE.default}%`);
+    // Move the grid highlight and counter to a step as it sounds.
+    showPlayhead(step) {
+        this.highlightCurrentStep(step);
+        this.updateBeatIndicator(step);
+
+        // Keep the measure being played on screen, once per measure, so it
+        // does not fight someone scrolling around to edit.
+        const measure = Math.floor(step / this.stepsPerBar);
+        if (measure !== this.lastMeasureShown) {
+            this.lastMeasureShown = measure;
+            if (this.measureCount > 1) {
+                const block = document.querySelector(`.measure-block[data-measure="${measure}"]`);
+                if (block) block.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+            }
+        }
     }
 
-    updateBeatIndicator() {
+    updateBeatIndicator(step) {
         const indicator = document.getElementById('beat-indicator');
-        const beatNum = Math.floor(this.currentStep / this.stepsPerBeat) + 1;
+        const bar = Math.floor(step / this.stepsPerBar);
+        const stepInBar = step % this.stepsPerBar;
+        const beatNum = Math.floor(stepInBar / this.stepsPerBeat) + 1;
 
-        indicator.textContent = `Bar ${this.currentBar + 1} | Beat ${beatNum} | Step ${this.currentStep + 1}`;
+        indicator.textContent = `Bar ${bar + 1}/${this.measureCount} | Beat ${beatNum} | Step ${stepInBar + 1}`;
+    }
+
+    // "step 5", or "measure 2 step 5" once there is more than one measure.
+    describeStep(step) {
+        const stepInBar = step % this.stepsPerBar + 1;
+        if (this.measureCount === 1) return `step ${stepInBar}`;
+        return `measure ${Math.floor(step / this.stepsPerBar) + 1} step ${stepInBar}`;
     }
 
     updateUI() {
@@ -712,96 +919,226 @@ class TaikoMetronome {
         this.beatsPerBar = resolved.beatsPerBar;
     }
 
-    // Rebuild the squares for the current bar length, leaving the pattern alone.
+    // Rebuild the squares for the current pattern size, leaving the pattern alone.
     rebuildPatternGrid() {
         const patternGrid = document.getElementById('pattern-grid');
         patternGrid.innerHTML = '';
 
-        const patternTitle = document.getElementById('pattern-title');
-        patternTitle.textContent = `Pattern Sequencer (${this.stepsPerBar} steps) - Tap squares to create rhythm, long-press to dot a note`;
+        const size = this.measureCount === 1
+            ? `${this.stepsPerBar} steps`
+            : `${this.measureCount} measures × ${this.stepsPerBar} steps`;
+        document.getElementById('pattern-title').textContent =
+            `Pattern Sequencer (${size})`;
 
+        this.lastMeasureShown = -1;
         this.initializePatternGrid();
+
+        const addButton = document.getElementById('add-measure-btn');
+        if (addButton) addButton.disabled = this.measureCount >= MAX_MEASURES;
     }
 
     // Change of bar length: keep as much of the pattern as still fits rather
     // than silently throwing away work.
-    regeneratePatternGrid() {
-        const dropped = this.resizeStepArrays();
+    regeneratePatternGrid(oldStepsPerBar) {
+        const dropped = this.resizeStepArrays(oldStepsPerBar);
         this.rebuildPatternGrid();
         this.refreshPatternDisplay();
         return dropped;
     }
 
-    // Fit patterns and dots to the current bar length, reporting how many set
-    // steps fell off the end.
-    resizeStepArrays() {
-        const patterns = this.emptyStepArrays();
-        const dotted = this.emptyStepArrays();
+    // Fit patterns and dots to the current bar length, measure by measure, so
+    // every measure keeps its own start. Reports how many set steps no longer
+    // fit in their measure.
+    resizeStepArrays(oldStepsPerBar) {
         let dropped = 0;
 
-        INSTRUMENT_IDS.forEach(id => {
-            const oldPattern = this.patterns[id] || [];
-            const oldDotted = this.dottedSteps[id] || [];
+        this.tracks.forEach(track => {
+            const steps = this.fitSteps(null);
+            const dotted = this.fitSteps(null);
+            const accents = this.fitSteps(null);
 
-            oldPattern.forEach((isSet, i) => {
+            track.steps.forEach((isSet, i) => {
                 if (!isSet) return;
-                if (i < this.stepsPerBar) {
-                    patterns[id][i] = true;
-                    dotted[id][i] = Boolean(oldDotted[i]);
+                const measure = Math.floor(i / oldStepsPerBar);
+                const position = i % oldStepsPerBar;
+                if (measure < this.measureCount && position < this.stepsPerBar) {
+                    const target = measure * this.stepsPerBar + position;
+                    steps[target] = true;
+                    dotted[target] = Boolean(track.dotted[i]);
+                    accents[target] = Boolean(track.accents[i]);
                 } else {
                     dropped++;
                 }
             });
+
+            track.steps = steps;
+            track.dotted = dotted;
+            track.accents = accents;
         });
 
-        this.patterns = patterns;
-        this.dottedSteps = dotted;
+        if (this.currentStep >= this.totalSteps) this.currentStep = 0;
         return dropped;
     }
 
     refreshPatternDisplay() {
-        INSTRUMENT_IDS.forEach(id => {
-            for (let i = 0; i < this.stepsPerBar; i++) this.updatePatternDisplay(id, i);
+        this.tracks.forEach(track => {
+            for (let i = 0; i < this.totalSteps; i++) this.updatePatternDisplay(track, i);
         });
     }
 
     initializePatternGrid() {
         const patternGrid = document.getElementById('pattern-grid');
 
-        INSTRUMENTS.forEach(({ id: instrument, label: labelText }) => {
-            const row = document.createElement('div');
-            row.className = 'pattern-row';
+        if (this.tracks.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'pattern-empty';
+            empty.textContent = 'No instruments yet - use "+ Add instrument" above to start.';
+            patternGrid.appendChild(empty);
+            return;
+        }
 
-            const label = document.createElement('div');
-            label.className = 'pattern-label';
-            label.textContent = labelText;
+        for (let measure = 0; measure < this.measureCount; measure++) {
+            const block = document.createElement('div');
+            block.className = 'measure-block';
+            block.dataset.measure = measure;
+            block.appendChild(this.buildMeasureHeader(measure));
 
-            row.appendChild(label);
+            const firstStep = measure * this.stepsPerBar;
 
-            const stepsContainer = document.createElement('div');
-            stepsContainer.className = 'pattern-steps';
+            this.tracks.forEach(track => {
+                const row = document.createElement('div');
+                row.className = 'pattern-row';
 
-            for (let i = 0; i < this.stepsPerBar; i++) {
-                const step = document.createElement('button');
-                step.className = 'pattern-step';
-                // Accent the counted beats, wherever they fall in this signature.
-                if (i % this.stepsPerBeat === 0) step.classList.add('beat-1');
-                step.dataset.instrument = instrument;
-                step.dataset.step = i;
-                
-                this.attachStepHandlers(step, instrument, i);
+                const label = document.createElement('div');
+                label.className = 'pattern-label';
+                label.textContent = this.trackLabel(track);
+                row.appendChild(label);
 
-                stepsContainer.appendChild(step);
-            }
+                const stepsContainer = document.createElement('div');
+                stepsContainer.className = 'pattern-steps';
 
-            row.appendChild(stepsContainer);
-            patternGrid.appendChild(row);
+                for (let offset = 0; offset < this.stepsPerBar; offset++) {
+                    // data-step is the index across the whole pattern.
+                    const i = firstStep + offset;
+                    const step = document.createElement('button');
+                    step.className = 'pattern-step';
+                    // Accent the counted beats, wherever they fall in this signature.
+                    if (offset % this.stepsPerBeat === 0) step.classList.add('beat-1');
+                    step.dataset.track = track.id;
+                    step.dataset.step = i;
+
+                    this.attachStepHandlers(step, track.id, i);
+
+                    stepsContainer.appendChild(step);
+                }
+
+                row.appendChild(stepsContainer);
+                block.appendChild(row);
+            });
+
+            patternGrid.appendChild(block);
+        }
+    }
+
+    // "Measure N" with its Duplicate / Delete buttons.
+    buildMeasureHeader(measure) {
+        const header = document.createElement('div');
+        header.className = 'measure-header';
+
+        const title = document.createElement('span');
+        title.className = 'measure-title';
+        title.textContent = `Measure ${measure + 1}`;
+        header.appendChild(title);
+
+        const actions = document.createElement('span');
+        actions.className = 'measure-actions';
+
+        const duplicate = document.createElement('button');
+        duplicate.className = 'measure-btn';
+        duplicate.textContent = 'Duplicate';
+        duplicate.disabled = this.measureCount >= MAX_MEASURES;
+        duplicate.addEventListener('click', () => this.duplicateMeasure(measure));
+        actions.appendChild(duplicate);
+
+        const remove = document.createElement('button');
+        remove.className = 'measure-btn measure-delete-btn';
+        remove.textContent = 'Delete';
+        remove.disabled = this.measureCount <= 1;
+        remove.addEventListener('click', () => this.deleteMeasure(measure));
+        actions.appendChild(remove);
+
+        header.appendChild(actions);
+        return header;
+    }
+
+    addMeasure() {
+        if (this.insertMeasure(this.measureCount, null)) {
+            this.showNotification(`Measure ${this.measureCount} added`);
+        }
+    }
+
+    duplicateMeasure(measure) {
+        if (this.insertMeasure(measure + 1, measure)) {
+            this.showNotification(`Measure ${measure + 1} duplicated`);
+        }
+    }
+
+    // Insert a measure at position `at`: empty, or a copy of measure `copyFrom`.
+    insertMeasure(at, copyFrom) {
+        if (this.measureCount >= MAX_MEASURES) {
+            this.showNotification(`A pattern can have at most ${MAX_MEASURES} measures`, true);
+            return false;
+        }
+
+        const length = this.stepsPerBar;
+        this.tracks.forEach(track => {
+            [track.steps, track.dotted, track.accents].forEach(row => {
+                const block = copyFrom === null
+                    ? Array(length).fill(false)
+                    : row.slice(copyFrom * length, (copyFrom + 1) * length);
+                row.splice(at * length, 0, ...block);
+            });
         });
+
+        this.measureCount++;
+        this.afterMeasuresChanged();
+        return true;
+    }
+
+    deleteMeasure(measure) {
+        if (this.measureCount <= 1) return;
+
+        const length = this.stepsPerBar;
+        const start = measure * length;
+        const hasHits = this.tracks.some(track =>
+            track.steps.slice(start, start + length).some(Boolean));
+        if (hasHits && !confirm(`Delete measure ${measure + 1} and its notes?`)) return;
+
+        this.tracks.forEach(track => {
+            track.steps.splice(start, length);
+            track.dotted.splice(start, length);
+            track.accents.splice(start, length);
+        });
+
+        this.measureCount--;
+        this.afterMeasuresChanged();
+        this.showNotification(`Measure ${measure + 1} deleted`);
+    }
+
+    afterMeasuresChanged() {
+        // Playback carries on; just keep its position inside the pattern.
+        if (this.currentStep >= this.totalSteps) this.currentStep = 0;
+        this.rebuildPatternGrid();
+        this.refreshPatternDisplay();
     }
 
     // Tap toggles the note; long-press (or right-click) toggles its dot.
-    attachStepHandlers(step, instrument, stepIndex) {
+    // Handlers hold the track id and look the track up when they fire.
+    attachStepHandlers(step, trackId, stepIndex) {
         let pressTimer = null;
+        // The first tap of a possible double-tap: when, and what the square
+        // looked like before it, so the second tap can undo it.
+        let lastTap = null;
         let longPressed = false;
         let startX = 0;
         let startY = 0;
@@ -818,7 +1155,7 @@ class TaikoMetronome {
             startY = e.clientY;
             pressTimer = setTimeout(() => {
                 longPressed = true;
-                this.toggleDotted(instrument, stepIndex);
+                this.toggleDotted(trackId, stepIndex);
             }, LONG_PRESS_MS);
         });
 
@@ -840,7 +1177,25 @@ class TaikoMetronome {
                 e.preventDefault();
                 return;
             }
-            this.toggleStep(instrument, stepIndex);
+            const now = performance.now();
+            if (lastTap && now - lastTap.time < DOUBLE_TAP_MS) {
+                const before = lastTap.before;
+                lastTap = null;
+                this.toggleAccent(trackId, stepIndex, before);
+                return;
+            }
+
+            const track = this.findTrack(trackId);
+            if (!track) return;
+            lastTap = {
+                time: now,
+                before: {
+                    hit: track.steps[stepIndex],
+                    dotted: track.dotted[stepIndex],
+                    accent: track.accents[stepIndex]
+                }
+            };
+            this.toggleStep(trackId, stepIndex);
         });
 
         step.addEventListener('contextmenu', (e) => {
@@ -851,52 +1206,73 @@ class TaikoMetronome {
                 longPressed = false;
                 return;
             }
-            this.toggleDotted(instrument, stepIndex);
+            this.toggleDotted(trackId, stepIndex);
         });
     }
 
-    toggleStep(instrument, stepIndex) {
-        this.patterns[instrument][stepIndex] = !this.patterns[instrument][stepIndex];
-        // A dot belongs to a note, so it goes when the note does.
-        if (!this.patterns[instrument][stepIndex]) {
-            this.dottedSteps[instrument][stepIndex] = false;
+    toggleStep(trackId, stepIndex) {
+        const track = this.findTrack(trackId);
+        if (!track) return;
+
+        track.steps[stepIndex] = !track.steps[stepIndex];
+        // A dot or accent belongs to a note, so it goes when the note does.
+        if (!track.steps[stepIndex]) {
+            track.dotted[stepIndex] = false;
+            track.accents[stepIndex] = false;
         }
-        this.updatePatternDisplay(instrument, stepIndex);
-        // Play sound when activating a step
-        if (this.patterns[instrument][stepIndex]) {
-            this.playSound(instrument);
-        }
+        this.updatePatternDisplay(track, stepIndex);
+
+        if (track.steps[stepIndex]) this.playSound(track);
     }
 
-    toggleDotted(instrument, stepIndex) {
+    // Double-tap: put the square back how it was before the first tap undid
+    // it, then flip the accent. The note always ends up on.
+    toggleAccent(trackId, stepIndex, before) {
+        const track = this.findTrack(trackId);
+        if (!track) return;
+
+        track.steps[stepIndex] = true;
+        track.dotted[stepIndex] = before.hit && before.dotted;
+        track.accents[stepIndex] = !(before.hit && before.accent);
+        this.updatePatternDisplay(track, stepIndex);
+
+        const label = this.trackLabel(track);
+        const accented = track.accents[stepIndex];
+        this.showNotification(`${label} ${this.describeStep(stepIndex)}: ${accented ? 'accented' : 'accent removed'}`);
+        this.playSound(track, 0, accented);
+    }
+
+    toggleDotted(trackId, stepIndex) {
+        const track = this.findTrack(trackId);
+        if (!track) return;
+
         // Dotting an empty square fills it first - a dot needs a note to sit on.
-        this.patterns[instrument][stepIndex] = true;
+        track.steps[stepIndex] = true;
+        const isDotted = !track.dotted[stepIndex];
+        track.dotted[stepIndex] = isDotted;
+        this.updatePatternDisplay(track, stepIndex);
 
-        const isDotted = !this.dottedSteps[instrument][stepIndex];
-        this.dottedSteps[instrument][stepIndex] = isDotted;
-        this.updatePatternDisplay(instrument, stepIndex);
-
-        const label = INSTRUMENT_LABELS[instrument];
+        const label = this.trackLabel(track);
         if (!isDotted) {
-            this.showNotification(`${label} step ${stepIndex + 1}: dot removed`);
+            this.showNotification(`${label} ${this.describeStep(stepIndex)}: dot removed`);
             return;
         }
 
         // The dot only moves the *next* hit, so say so when there is nothing to move.
-        const nextStep = (stepIndex + 1) % this.stepsPerBar;
-        const hasFollowingHit = this.patterns[instrument][nextStep];
-        this.showNotification(hasFollowingHit
-            ? `${label} step ${stepIndex + 1} dotted`
-            : `${label} step ${stepIndex + 1} dotted - add a hit on step ${nextStep + 1} to hear it`);
+        const nextStep = (stepIndex + 1) % this.totalSteps;
+        this.showNotification(track.steps[nextStep]
+            ? `${label} ${this.describeStep(stepIndex)} dotted`
+            : `${label} ${this.describeStep(stepIndex)} dotted - add a hit on ${this.describeStep(nextStep)} to hear it`);
 
-        this.playSound(instrument);
+        this.playSound(track, 0, track.accents[stepIndex]);
     }
 
-    updatePatternDisplay(instrument, stepIndex) {
-        const step = document.querySelector(`.pattern-step[data-instrument="${instrument}"][data-step="${stepIndex}"]`);
+    updatePatternDisplay(track, stepIndex) {
+        const step = document.querySelector(`.pattern-step[data-track="${track.id}"][data-step="${stepIndex}"]`);
         if (step) {
-            step.classList.toggle('active', this.patterns[instrument][stepIndex]);
-            step.classList.toggle('dotted', this.dottedSteps[instrument][stepIndex]);
+            step.classList.toggle('active', track.steps[stepIndex]);
+            step.classList.toggle('dotted', track.dotted[stepIndex]);
+            step.classList.toggle('accent', track.accents[stepIndex]);
         }
     }
 
@@ -915,46 +1291,41 @@ class TaikoMetronome {
     }
 
     clearAllPatterns() {
-        this.patterns = this.emptyStepArrays();
-        this.dottedSteps = this.emptyStepArrays();
+        this.tracks.forEach(track => {
+            track.steps.fill(false);
+            track.dotted.fill(false);
+            track.accents.fill(false);
+        });
         this.refreshPatternDisplay();
         this.showNotification('All patterns cleared');
     }
 
     fillAllPatterns() {
-        this.patterns = this.emptyStepArrays();
-        INSTRUMENT_IDS.forEach(id => this.patterns[id].fill(true));
-        this.dottedSteps = this.emptyStepArrays();
+        this.tracks.forEach(track => {
+            track.steps.fill(true);
+            track.dotted.fill(false);
+            track.accents.fill(false);
+        });
         this.refreshPatternDisplay();
         this.showNotification('All patterns filled');
     }
 
     loadDefaultSounds() {
-        // Loaded twice over: HTML5 Audio for iOS media-channel routing, Web
-        // Audio as the fallback path.
+        // Decoded into Web Audio buffers, which can be scheduled to the sample.
         INSTRUMENTS.forEach(({ id: instrument, file: soundPath }) => {
-            // Create HTML5 Audio element for iOS media channel routing
-            const audio = new Audio(soundPath);
-            audio.preload = 'auto';
-            audio.load();
-            this.audioElements[instrument] = audio;
-            
-            // Also load into Web Audio API for pitch control
             fetch(soundPath)
-                .then(response => response.arrayBuffer())
-                .then(arrayBuffer => {
-                    if (!this.audioContext) {
-                        this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                    }
-                    return this.audioContext.decodeAudioData(arrayBuffer);
+                .then(response => {
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    return response.arrayBuffer();
                 })
+                .then(arrayBuffer => this.ensureAudioContext().decodeAudioData(arrayBuffer))
                 .then(buffer => {
                     this.audioBuffers[instrument] = buffer;
-                    console.log(`Loaded default sound for ${instrument}: ${soundPath}`);
                 })
                 .catch(error => {
-                    // Silently fail if files don't exist
-                    console.log(`Default sound not found for ${instrument}: ${soundPath}`);
+                    // Fall back to a synthesised tone for this instrument.
+                    this.sampleFailed[instrument] = true;
+                    console.warn(`Could not load ${soundPath}:`, error);
                 });
         });
     }

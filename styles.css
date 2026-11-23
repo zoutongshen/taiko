@@ -853,3 +853,233 @@ footer {
         padding: 12px;
     }
 }
+
+/* Swing amount */
+.swing-amount {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.swing-amount input[type="range"] {
+    width: 160px;
+    accent-color: #cc0000;
+}
+
+.swing-value {
+    min-width: 3em;
+    font-weight: 600;
+    color: #cc0000;
+}
+
+/* Measures */
+.measure-block {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+}
+
+.measure-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.measure-title {
+    font-weight: 700;
+    color: #cc0000;
+}
+
+.measure-actions {
+    display: flex;
+    gap: 6px;
+}
+
+.measure-btn {
+    padding: 4px 10px;
+    font-size: 0.85em;
+    background: #fff;
+    border: 1px solid #cc0000;
+    color: #cc0000;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.measure-btn:hover:not(:disabled) {
+    background: #cc0000;
+    color: #fff;
+}
+
+.measure-btn:disabled,
+.pattern-control-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+@media (max-width: 768px) {
+    .measure-block {
+        min-width: fit-content;
+    }
+
+    /* Keep the measure's buttons at the left edge while the grid scrolls sideways. */
+    .measure-header {
+        position: sticky;
+        left: 0;
+        justify-content: flex-start;
+    }
+
+    .measure-btn {
+        padding: 8px 12px;
+    }
+}
+
+/* Tracks: which instruments are on the grid, with their pitch and volume */
+.track-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.track-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.track-row {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+    padding: 8px 12px;
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+}
+
+.track-row .instrument-label {
+    min-width: 90px;
+}
+
+.track-row .pitch-btn,
+.track-row .volume-btn {
+    width: 32px;
+    height: 32px;
+    font-size: 1.2em;
+}
+
+.track-remove-btn {
+    margin-left: auto;
+    width: 32px;
+    height: 32px;
+    background: #fff;
+    border: 1px solid #ccc;
+    color: #999;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 0.9em;
+}
+
+.track-remove-btn:hover {
+    border-color: #cc0000;
+    color: #cc0000;
+}
+
+.add-track-select {
+    align-self: flex-start;
+    padding: 8px 14px;
+    background: #fff;
+    border: 2px dashed #cc0000;
+    color: #cc0000;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 0.95em;
+    cursor: pointer;
+}
+
+.add-track-select:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.pattern-empty {
+    padding: 30px 10px;
+    text-align: center;
+    color: #999;
+}
+
+@media (max-width: 768px) {
+    /* Stay put while the grid underneath scrolls sideways. */
+    .track-panel {
+        position: sticky;
+        left: 0;
+    }
+
+    .track-row {
+        gap: 8px 14px;
+    }
+
+    /* Name and remove button on top, pitch and volume underneath. */
+    .track-row .instrument-label {
+        min-width: 0;
+        flex: 1 1 calc(100% - 50px);
+    }
+
+    .track-remove-btn {
+        order: 1;
+        margin-left: 0;
+    }
+
+    .track-row .control-group {
+        order: 2;
+        width: auto;
+        justify-content: flex-start;
+    }
+
+    .track-row .control-label {
+        min-width: 0;
+    }
+
+    .track-row .pitch-btn,
+    .track-row .volume-btn {
+        width: 40px;
+        height: 40px;
+    }
+}
+
+/* Accented note: a deeper fill, set apart from a plain hit at a glance. */
+.pattern-step.accent.active {
+    background: #cc0000;
+    border-color: #cc0000;
+    box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.55), 0 2px 8px rgba(204, 0, 0, 0.45);
+}
+
+.pattern-step.accent.active.playing {
+    box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.55), 0 0 15px rgba(204, 0, 0, 0.8);
+}
+
+/* The dot's usual dark ink would vanish on the accent fill. */
+.pattern-step.dotted.accent.active::after {
+    background: #fff;
+}
+
+footer .last-updated {
+    margin-top: 6px;
+    font-size: 0.8em;
+    color: #bbb;
+}
+
+/* Small how-to line under a section title. */
+.section-hint {
+    margin: -6px 0 15px;
+    font-size: 0.85em;
+    color: #888;
+}
