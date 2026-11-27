@@ -74,29 +74,32 @@ const SOUND_PROFILES = {
 
 // A second of silence as a WAV blob URL. Looping it through an <audio> element
 // puts iOS into its media ("playback") audio session, so Web Audio follows the
-// media volume instead of being muted by the ringer switch.
-function createSilentWavUrl(seconds = 1, sampleRate = 8000) {
-    const sampleCount = seconds * sampleRate;
-    const buffer = new ArrayBuffer(44 + sampleCount);
+// media volume and Bluetooth instead of being muted by the ringer switch.
+// Plain 16-bit 44.1 kHz, the most ordinary format there is, so no iOS version
+// declines to play it.
+function createSilentWavUrl(seconds = 1, sampleRate = 44100) {
+    const bytesPerSample = 2;
+    const dataSize = seconds * sampleRate * bytesPerSample;
+    const buffer = new ArrayBuffer(44 + dataSize);
     const view = new DataView(buffer);
     const writeText = (offset, text) => {
         for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
     };
 
     writeText(0, 'RIFF');
-    view.setUint32(4, 36 + sampleCount, true);
+    view.setUint32(4, 36 + dataSize, true);
     writeText(8, 'WAVE');
     writeText(12, 'fmt ');
     view.setUint32(16, 16, true);          // fmt chunk size
     view.setUint16(20, 1, true);           // PCM
     view.setUint16(22, 1, true);           // mono
     view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate, true);  // byte rate (8-bit mono)
-    view.setUint16(32, 1, true);           // block align
-    view.setUint16(34, 8, true);           // bits per sample
+    view.setUint32(28, sampleRate * bytesPerSample, true);  // byte rate
+    view.setUint16(32, bytesPerSample, true);               // block align
+    view.setUint16(34, 8 * bytesPerSample, true);           // bits per sample
     writeText(36, 'data');
-    view.setUint32(40, sampleCount, true);
-    new Uint8Array(buffer, 44).fill(128);  // 8-bit silence is the midpoint
+    view.setUint32(40, dataSize, true);
+    // The samples are already zero, which is silence at 16 bits.
 
     return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
 }
@@ -225,46 +228,81 @@ class TaikoMetronome {
     }
 
     // Send Web Audio to the media channel on iOS rather than the ringer, so the
-    // silent switch does not mute it. Must run inside a user gesture.
+    // silent switch does not mute it and Bluetooth speakers get it. Must run
+    // inside a user gesture. Cheap to repeat: it only acts when needed.
     routeToMediaChannel() {
-        // Safari 17+ lets the page simply say so.
-        if (navigator.audioSession) {
-            try {
+        // Newer Safari lets the page declare it outright...
+        try {
+            if (navigator.audioSession && navigator.audioSession.type !== 'playback') {
                 navigator.audioSession.type = 'playback';
-                return;
-            } catch (err) {
-                // Fall through to the older trick.
             }
+        } catch (err) {
+            // Unsupported; the silent loop below covers it.
         }
 
-        // Older iOS: any playing media element switches the session over.
+        // ...but some versions have the setting without honouring it, so
+        // always keep the older trick going too: while any media element is
+        // playing, iOS moves the whole page into its media session.
         if (!this.silentAudio) {
             this.silentAudio = new Audio(createSilentWavUrl());
             this.silentAudio.loop = true;
+            this.silentAudio.preload = 'auto';
             this.silentAudio.setAttribute('playsinline', '');
+            this.silentAudio.setAttribute('webkit-playsinline', '');
+
+            // Name the lock-screen "Now Playing" entry the loop creates.
+            if ('mediaSession' in navigator && window.MediaMetadata) {
+                navigator.mediaSession.metadata = new MediaMetadata({ title: 'Taiko Metronome' });
+            }
         }
         if (this.silentAudio.paused) {
             this.silentAudio.play().catch(err => console.warn('Silent keep-alive failed:', err));
         }
     }
 
+    // iOS reports 'interrupted' after a call or Siri; both need a resume.
+    resumeAudioContext() {
+        const ctx = this.ensureAudioContext();
+        if (ctx.state === 'suspended' || ctx.state === 'interrupted') {
+            return ctx.resume().catch(err => console.warn('Audio resume failed:', err));
+        }
+        return null;
+    }
+
     initializeAudio() {
-        // Unlock audio on the first user interaction (required on iOS/mobile).
-        const unlockAudio = () => {
+        let unlocked = false;
+
+        // Every tap re-checks the routing, not just the first: iOS can drop
+        // the silent loop or suspend the context after a call or an app
+        // switch, and only a user gesture is allowed to start them again.
+        // touchstart does not count as a gesture for media on iOS, so use
+        // the events that do.
+        const onGesture = () => {
             const ctx = this.ensureAudioContext();
             this.routeToMediaChannel();
+            this.resumeAudioContext();
 
-            if (ctx.state === 'suspended') ctx.resume();
-
-            // Play a silent buffer to finish unlocking on iOS.
-            const source = ctx.createBufferSource();
-            source.buffer = ctx.createBuffer(1, 1, 22050);
-            source.connect(ctx.destination);
-            source.start(0);
+            if (!unlocked) {
+                unlocked = true;
+                // A silent buffer finishes unlocking Web Audio on older iOS.
+                const source = ctx.createBufferSource();
+                source.buffer = ctx.createBuffer(1, 1, 22050);
+                source.connect(ctx.destination);
+                source.start(0);
+            }
         };
 
-        ['touchstart', 'touchend', 'click'].forEach(event => {
-            document.addEventListener(event, unlockAudio, { once: true, capture: true });
+        ['touchend', 'click', 'keydown'].forEach(event => {
+            document.addEventListener(event, onGesture, { capture: true });
+        });
+
+        // Let go of the media session when the page is put away and nothing
+        // is playing, so it does not hold the lock screen or pause other
+        // apps' music for no reason. The next tap takes it back.
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && !this.isPlaying && this.silentAudio) {
+                this.silentAudio.pause();
+            }
         });
     }
 
@@ -637,7 +675,7 @@ class TaikoMetronome {
         const ctx = this.ensureAudioContext();
         // Both of these need the user gesture, so they come before any await.
         this.routeToMediaChannel();
-        const resumed = ctx.state === 'suspended' ? ctx.resume() : null;
+        const resumed = this.resumeAudioContext();
 
         this.isPlaying = true;
         this.finishing = false;
@@ -771,7 +809,7 @@ class TaikoMetronome {
     // Play a track's sound now, or at an exact time on the audio clock.
     playSound(track, when = 0, accented = false) {
         const ctx = this.ensureAudioContext();
-        if (ctx.state === 'suspended') ctx.resume();
+        this.resumeAudioContext();
 
         const instrument = track.instrument;
         const buffer = this.audioBuffers[instrument];
